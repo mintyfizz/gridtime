@@ -4,7 +4,7 @@ __pycache__/
 *.pyc
 .pytest_cache/
 .ruff_cache/
-catalog/
+/catalog/
 data/
 .DS_Store
 .shots/
@@ -15,3 +15,4 @@ transforms/dbt_packages/
 logs/
 transforms/.user.yml
 mlruns/
+work/

@@ -1,0 +1,16 @@
+checks for fct_balancing_minute:
+  - row_count > 0
+  - duplicate_count(valid_from) = 0
+  - missing_count(known_since) = 0
+checks for fct_quarter_hour:
+  - row_count > 0
+  - missing_count(quarter_hour) = 0
+  - duplicate_count(quarter_hour) = 0
+  - min(minutes_observed) >= 1
+  - max(minutes_observed) <= 15
+checks for fct_revisions:
+  - duplicate_count(valid_from, measure) = 0
+  - invalid_revisions = 0:
+      invalid_revisions query: |
+        SELECT count(*) FROM fct_revisions
+        WHERE revision IS DISTINCT FROM historical_value - first_value

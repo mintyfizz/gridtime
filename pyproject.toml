@@ -18,12 +18,14 @@ dependencies = [
     "dagster-webserver>=1.11",
     "dagster-dbt>=0.27",
     "dbt-core>=1.10",
-    "dbt-duckdb>=1.9",
     "confluent-kafka>=2.5",
     "scikit-learn>=1.5",
     "mlflow>=2.16",
     "joblib>=1.4",
     "tabulate>=0.9",
+    "dbt-trino>=1.9",
+    "soda-core-trino>=3.5,<4",
+    "setuptools>=84.0.0",
 ]
 
 [dependency-groups]

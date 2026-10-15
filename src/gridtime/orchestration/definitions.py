@@ -27,10 +27,10 @@ from gridtime.config import get_settings
 from gridtime.orchestration import assets
 
 settings = get_settings()
-# dbt runs as a subprocess and reads its paths from the environment.
-os.environ.setdefault("GRIDTIME_SILVER_PARQUET", str(settings.silver_export_path))
-os.environ.setdefault("GRIDTIME_GOLD_DB", str(settings.gold_db_path))
-settings.gold_db_path.parent.mkdir(parents=True, exist_ok=True)
+# Share host configuration with dbt subprocesses.
+os.environ.setdefault("TRINO_HOST", settings.trino_host)
+os.environ.setdefault("TRINO_PORT", str(settings.trino_port))
+os.environ.setdefault("TRINO_USER", settings.trino_user)
 
 poll_nrt = define_asset_job("poll_nrt", selection=AssetSelection.assets(assets.STREAM_NRT))
 poll_historical = define_asset_job(
@@ -38,6 +38,11 @@ poll_historical = define_asset_job(
 )
 retrain_forecast = define_asset_job(
     "retrain_forecast", selection=AssetSelection.assets(assets.FORECAST_MODEL)
+)
+
+refresh_lakehouse = define_asset_job(
+    "refresh_lakehouse",
+    selection=AssetSelection.all() - AssetSelection.assets(assets.FORECAST_MODEL),
 )
 
 defs = Definitions(
@@ -51,11 +56,14 @@ defs = Definitions(
         assets.forecast_live,
     ],
     asset_checks=[
+        assets.soda_bronze,
+        assets.soda_silver,
+        assets.soda_gold,
         assets.stream_fully_consumed,
         assets.nrt_is_fresh,
         assets.silver_has_no_duplicate_versions,
     ],
-    jobs=[poll_nrt, poll_historical, retrain_forecast],
+    jobs=[poll_nrt, poll_historical, retrain_forecast, refresh_lakehouse],
     schedules=[
         ScheduleDefinition(
             job=poll_nrt,

@@ -1,0 +1,8 @@
+checks for elia_raw:
+  - row_count > 0
+  - missing_count(valid_time) = 0
+  - missing_count(transaction_time) = 0
+  - missing_count(payload_hash) = 0
+  - duplicate_count(dataset_id, payload_hash) = 0
+  - invalid_count(dataset_id) = 0:
+      valid values: [ods175, ods165]

@@ -2,7 +2,7 @@
 select
     valid_from,
     valid_to,
-    coalesce(quarter_hour, time_bucket(interval 15 minute, valid_from)) as quarter_hour,
+    coalesce(quarter_hour, date_add('minute', -(minute(valid_from) % 15), date_trunc('minute', valid_from))) as quarter_hour,
     measure,
     value,
     unit,

@@ -2,11 +2,9 @@ version: 2
 
 sources:
   - name: silver
-    description: >
-      Bitemporal Silver layer. One row per (minute, measure, version), written by
-      `gridtime.transform.silver` and exported as a Parquet snapshot for DuckDB.
-    meta:
-      external_location: "read_parquet('{{ env_var('GRIDTIME_SILVER_PARQUET', '../data/silver/balancing_minute.parquet') }}')"
+    database: lakehouse
+    schema: silver
+    description: Audited bitemporal Silver versions in Nessie main, read directly through Trino.
     tables:
       - name: balancing_minute
         columns:

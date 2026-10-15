@@ -5,27 +5,25 @@ with versions as (
 ),
 
 first_nrt as (
-    select *
-    from versions
-    where stage = 'near_real_time'
-    qualify row_number() over (
-        partition by valid_from, measure order by transaction_time
-    ) = 1
+    select * from (
+        select *, row_number() over (
+            partition by valid_from, measure order by transaction_time, payload_hash
+        ) as version_rank from versions where stage = 'near_real_time'
+    ) where version_rank = 1
 ),
 
 latest_hist as (
-    select *
-    from versions
-    where stage = 'historical'
-    qualify row_number() over (
-        partition by valid_from, measure order by transaction_time desc
-    ) = 1
+    select * from (
+        select *, row_number() over (
+            partition by valid_from, measure order by transaction_time desc, payload_hash desc
+        ) as version_rank from versions where stage = 'historical'
+    ) where version_rank = 1
 ),
 
 version_counts as (
     select valid_from, measure, count(*) as versions
     from versions
-    group by all
+    group by valid_from, measure
 )
 
 select
@@ -44,5 +42,5 @@ select
     date_diff('minute', f.transaction_time, h.transaction_time) / 60.0 as hours_to_historical,
     c.versions
 from first_nrt f
-join latest_hist h using (valid_from, measure)
-join version_counts c using (valid_from, measure)
+join latest_hist h on f.valid_from = h.valid_from and f.measure = h.measure
+join version_counts c on f.valid_from = c.valid_from and f.measure = c.measure

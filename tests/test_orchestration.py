@@ -1,12 +1,10 @@
-"""The Dagster graph loads, is wired as intended, and runs Silver → Gold end to end."""
+"""The Dagster graph loads, is wired as intended, and preserves isolated Silver processing."""
 
 from datetime import UTC, datetime, timedelta
 
-import duckdb
 import pyarrow as pa
 import pytest
-from dagster import AssetKey, materialize
-from dagster_dbt import DbtCliResource
+from dagster import AssetKey
 from pyiceberg.catalog.sql import SqlCatalog
 
 from gridtime.config import get_settings
@@ -50,8 +48,6 @@ def lakehouse(tmp_path, monkeypatch):
     monkeypatch.setattr(tables, "get_catalog", lambda: catalog)
     settings = get_settings()
     monkeypatch.setattr(settings, "data_dir", str(tmp_path / "data"))
-    monkeypatch.setenv("GRIDTIME_SILVER_PARQUET", str(settings.silver_export_path))
-    monkeypatch.setenv("GRIDTIME_GOLD_DB", str(settings.gold_db_path))
     tables.create_tables()
 
     rows = []
@@ -74,26 +70,16 @@ def lakehouse(tmp_path, monkeypatch):
     return settings
 
 
-def test_silver_then_gold_end_to_end(lakehouse):
-    result = materialize(
-        [assets.balancing_minute, assets.silver_has_no_duplicate_versions, assets.gold_models],
-        resources={"dbt": DbtCliResource(project_dir=assets.dbt_project)},
-    )
-    assert result.success
+def test_incremental_silver_in_isolated_catalog(lakehouse):
+    from gridtime.transform import silver
 
-    silver_meta = next(
-        e.materialization.metadata
-        for e in result.get_asset_materialization_events()
-        if e.asset_key == assets.SILVER
-    )
-    assert silver_meta["new_versions"].value == 60 * 12  # 60 bronze rows × 12 measures
-    checks = result.get_asset_check_evaluations()
-    assert checks and all(c.passed for c in checks)
+    first = silver.run()
+    assert first["new_versions"] == 60 * 12
+    second = silver.run()
+    assert second["new_versions"] == 0
+    assert tables.silver_table().scan().count() == 720
 
-    con = duckdb.connect(str(lakehouse.gold_db_path), read_only=True)
-    stats = con.sql(
-        "SELECT minutes_compared, share_changed, max_abs_revision "
-        "FROM gold.agg_revision_stats WHERE measure = 'system_imbalance'"
-    ).fetchone()
-    assert stats == (30, pytest.approx(10 / 30), 2.0)
-    assert con.sql("SELECT count(*) FROM gold.fct_quarter_hour").fetchone()[0] == 2
+
+def test_soda_checks_registered():
+    names = {spec.name for check in defs.asset_checks for spec in check.check_specs}
+    assert {"soda_bronze", "soda_silver", "soda_gold"} <= names

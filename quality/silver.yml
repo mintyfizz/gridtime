@@ -1,0 +1,14 @@
+checks for balancing_minute:
+  - row_count > 0
+  - missing_count(valid_from) = 0
+  - missing_count(transaction_time) = 0
+  - missing_count(measure) = 0
+  - duplicate_count(valid_from, measure, transaction_time) = 0
+  - invalid_count(stage) = 0:
+      valid values: [near_real_time, historical]
+  - invalid_intervals = 0:
+      invalid_intervals query: |
+        SELECT count(*) FROM balancing_minute WHERE valid_to <= valid_from
+  - invalid_values = 0:
+      invalid_values query: |
+        SELECT count(*) FROM balancing_minute WHERE value IS NOT NULL AND NOT is_finite(value)

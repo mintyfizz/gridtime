@@ -69,10 +69,26 @@ Outputs are Parquet under `data/forecast/`. See
 |-------|----------|------|
 | Bronze | Raw payloads + metadata | Append-only, never updated |
 | Silver | One row per (minute, measure, version) with valid time and transaction time | Append-only, bitemporal, change-only |
-| Gold | dbt models on DuckDB (`data/warehouse.duckdb`) | Rebuilt from a Silver snapshot after every change |
+| Gold | dbt-trino Iceberg tables in MinIO | Rebuilt directly from published Silver after every change |
 
 ## Why two times
 
 The same quarter-hour is published several times: forecasts that update every minute,
 a non-validated near-real-time value, and a validated value the next day. Keeping each
 version with the time it was received allows "as-of" queries and leak-free backtests.
+
+## Platform upgrade (milestone 6)
+
+```
+Bronze (main) -> Silver candidate (silver-wap) -> Soda via Trino -> merge audited hash
+                                                           fail -> retain tag, main unchanged
+Silver (main) -> dbt-trino -> Gold Iceberg tables -> dbt tests + Soda checks
+```
+
+Nessie persists its catalog in a RocksDB Docker volume. Existing Iceberg metadata
+was registered without relocating data. SQLite is retained as a frozen recovery
+source. `lakehouse` and `lakehouse_wap` are separate Trino catalogs for the two
+branches. There is no Silver Parquet export or DuckDB Gold database in the live
+pipeline. DuckDB still handles local Arrow queries for Python transformations and
+the dashboard. See [decision 006](decisions/006-nessie-trino-soda.md) for concurrency,
+rollback, checks and validation evidence.

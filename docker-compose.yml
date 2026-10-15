@@ -62,6 +62,49 @@ services:
     environment:
       KAFKA_BROKERS: redpanda:9092
 
+  nessie:
+    image: ghcr.io/projectnessie/nessie:0.104.3
+    user: root   # so RocksDB can write to the named volume
+    depends_on:
+      minio:
+        condition: service_healthy
+    ports:
+      - "19120:19120"   # Nessie API + Iceberg REST catalog (/iceberg)
+    environment:
+      NESSIE_VERSION_STORE_TYPE: ROCKSDB
+      NESSIE_VERSION_STORE_PERSIST_ROCKS_DATABASE_PATH: /nessie/data
+      NESSIE_CATALOG_DEFAULT_WAREHOUSE: warehouse
+      NESSIE_CATALOG_WAREHOUSES_WAREHOUSE_LOCATION: s3://${S3_BUCKET}/warehouse
+      NESSIE_CATALOG_SERVICE_S3_DEFAULT_OPTIONS_REGION: us-east-1
+      NESSIE_CATALOG_SERVICE_S3_DEFAULT_OPTIONS_ENDPOINT: http://minio:9000/
+      NESSIE_CATALOG_SERVICE_S3_DEFAULT_OPTIONS_EXTERNAL_ENDPOINT: http://localhost:9000/
+      NESSIE_CATALOG_SERVICE_S3_DEFAULT_OPTIONS_PATH_STYLE_ACCESS: "true"
+      NESSIE_CATALOG_SERVICE_S3_DEFAULT_OPTIONS_REQUEST_SIGNING_ENABLED: "false"
+      NESSIE_CATALOG_SERVICE_S3_DEFAULT_OPTIONS_ACCESS_KEY: urn:nessie-secret:quarkus:nessie.catalog.secrets.access-key
+      nessie.catalog.secrets.access-key.name: ${MINIO_ROOT_USER}
+      nessie.catalog.secrets.access-key.secret: ${MINIO_ROOT_PASSWORD}
+    volumes:
+      - nessie-data:/nessie/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9000/q/health/ready || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  trino:
+    image: trinodb/trino:476
+    depends_on:
+      nessie:
+        condition: service_healthy
+    ports:
+      - "8085:8080"     # Trino (8080 is taken by Redpanda Console)
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    volumes:
+      - ./trino/catalog:/etc/trino/catalog:ro
+
 volumes:
   minio-data:
   redpanda-data:
+  nessie-data:

@@ -1,10 +1,11 @@
 -- Latest known value of every measure, one row per minute (wide).
 with latest as (
-    select *
-    from {{ ref('stg_silver__versions') }}
-    qualify row_number() over (
-        partition by valid_from, measure order by transaction_time desc
-    ) = 1
+    select * from (
+        select *, row_number() over (
+            partition by valid_from, measure order by transaction_time desc, payload_hash desc
+        ) as version_rank
+        from {{ ref('stg_silver__versions') }}
+    ) where version_rank = 1
 )
 
 select
@@ -15,7 +16,7 @@ select
     max(value) filter (where measure = '{{ m }}') as {{ m }},
     {% endfor -%}
     bool_or(is_historical) as is_historical,
-    arg_max(quality_status, transaction_time) as quality_status,
+    max_by(quality_status, transaction_time) as quality_status,
     max(transaction_time) as known_since
 from latest
 group by valid_from

@@ -24,7 +24,7 @@ know it yet:
 
 ```
 Elia API → pollers → Redpanda → Bronze sink → Bronze (raw) → Silver (bitemporal) → Gold (dbt)
-   storage: MinIO (S3) + Iceberg · streaming: Redpanda · Gold: dbt on DuckDB · orchestration: Dagster
+   storage: MinIO (S3) + Iceberg · streaming: Redpanda · catalog: Nessie · Gold: dbt on Trino · orchestration: Dagster
 ```
 
 See [docs/architecture.md](docs/architecture.md).
@@ -38,7 +38,7 @@ See [docs/architecture.md](docs/architecture.md).
 | 3 | Orchestration + Gold models | Dagster, dbt | Done |
 | 4 | Streaming buffer | Redpanda | Done |
 | 5 | Forecasting + evaluation | scikit-learn, MLflow | Done |
-| 6 | Platform upgrade | Trino, Nessie, Soda | Planned |
+| 6 | Platform upgrade | Trino, Nessie, Soda | Done |
 
 ## Quick start
 
@@ -46,12 +46,13 @@ Requirements: Docker, Python 3.12, [uv](https://docs.astral.sh/uv/).
 
 ```bash
 cp .env.example .env
-make up        # start MinIO and create the lakehouse bucket
+make up        # start MinIO, Redpanda, Nessie and Trino
 make install   # install Python dependencies
 make init      # create the Iceberg tables
 make ingest    # poll Elia once into Redpanda, then drain the topics into Bronze
 make backfill  # optional: 8 weeks of Elia history (needed for forecasting)
-make silver    # turn new Bronze rows into bitemporal Silver versions
+make silver    # write Silver on a branch, audit with Soda, merge only on pass
+make gold      # build and test Gold Iceberg tables through Trino
 make peek      # query Bronze with DuckDB
 make dashboard # open the dashboard at http://localhost:8501
 ```
@@ -100,6 +101,30 @@ make forecast   # retrain, run both backtests, make a live forecast
 make mlflow     # MLflow UI at http://localhost:5001
 ```
 
+## Publication gate and SQL platform
+
+Nessie holds the Iceberg catalog. Each Silver update is written to `silver-wap`,
+checked by Soda through Trino, then merged into `main` only after all checks pass.
+Failed candidates stay on tagged references for inspection. Trino reads Iceberg
+and dbt builds Gold directly in MinIO; no Silver Parquet export is needed.
+
+The live failure demo inserted a duplicate on the branch: Soda blocked it and main's
+968,772 rows, metadata pointer and catalog hash stayed unchanged. A complete Dagster
+run materialized ten assets and passed all 24 checks. See
+[decision 006](docs/decisions/006-nessie-trino-soda.md) for migration evidence, recovery
+limits and screenshots. The quality gate covers the declared checks; Gold's checks
+are post-build, and local WAP serialization assumes one host.
+
+```bash
+make quality      # Bronze, Silver and Gold Soda checks
+make failure-demo # stop Dagster/other writers first; prove rejection leaves main unchanged
+```
+
+Upgrading an existing SQLite installation: stop all writers, run `make migrate`,
+then use `CATALOG_BACKEND=nessie` and restart Dagster/dashboard. Keep the SQLite
+catalog and backups for recovery; they do not track subsequent Nessie writes.
+Nessie: [catalog API](http://localhost:19120/api/v2/config) · Trino: [query UI](http://localhost:8085).
+
 ## Gold models (dbt)
 
 | Model | Grain | What it answers |
@@ -109,7 +134,8 @@ make mlflow     # MLflow UI at http://localhost:5001
 | `fct_revisions` | minute × measure | First near-real-time value vs historical value |
 | `agg_revision_stats` | measure | How often and how much Elia revises each measure |
 
-Every model is tested (`make gold`); in Dagster the dbt tests appear as asset checks.
+Gold and staging are Iceberg tables in Nessie main. Median/p95 revision statistics
+use approximate percentiles in Trino. Every model is tested (`make gold`); in Dagster the dbt tests appear as asset checks.
 
 MinIO console: http://localhost:9001 (credentials in `.env`) · Redpanda Console:
 http://localhost:8080 (topics, messages, consumer lag).
@@ -142,9 +168,12 @@ src/gridtime/
   storage/             Iceberg catalog connection and table definitions
   transform/           Bronze → Silver: canonical measures, versioning, as-of reads
   orchestration/       Dagster assets, schedules, checks
+  quality/             Soda scans and the failure-path demo
   forecasting/         features, models, revised + as-known backtests, live forecasts
   dashboard/           Streamlit app and the queries behind it
-transforms/            dbt project (Gold)
+transforms/            dbt-trino project (Gold)
+quality/               declarative Soda checks
+trino/catalog/         main and WAP Iceberg REST catalogs
 tests/                 unit tests
 docs/                  architecture and decision records
 ```

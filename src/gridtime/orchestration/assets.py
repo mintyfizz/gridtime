@@ -1,7 +1,7 @@
 """Dagster assets: Elia → Redpanda topics → Bronze sink → Silver → dbt Gold.
 
 Every run is serialised (one concurrent run, see dagster.yaml) because each step
-commits to Iceberg through the same SQL catalog. Silver reads Bronze by
+commits to Iceberg through Nessie. Silver reads Bronze by
 `ingested_at`, so buffered observations that reach Bronze late are still picked
 up (docs/decisions/002–004).
 """
@@ -29,7 +29,7 @@ from gridtime.ingestion.elia_client import EliaClient
 from gridtime.ingestion.poller import poll_dataset
 from gridtime.ingestion.stream import ensure_topics, make_producer
 from gridtime.storage.tables import bronze_table, silver_table
-from gridtime.transform import silver
+from gridtime.transform import wap
 from gridtime.transform.measures import HISTORICAL, NRT
 
 STREAM_NRT = AssetKey(["stream", "elia_ods175"])
@@ -114,16 +114,15 @@ def elia_raw() -> MaterializeResult:
     key=SILVER,
     deps=[BRONZE],
     group_name="silver",
-    kinds={"python", "iceberg", "parquet"},
+    kinds={"python", "iceberg", "trino"},
     automation_condition=AutomationCondition.eager(),
     description=(
-        "Turn new Bronze rows into bitemporal Silver versions, then publish a Parquet "
-        "snapshot for dbt."
+        "Write bitemporal Silver versions on a Nessie branch; Soda audits through Trino "
+        "before merging the audited commit into main."
     ),
 )
 def balancing_minute(context: AssetExecutionContext) -> MaterializeResult:
-    stats = silver.run()
-    exported = silver.export_snapshot()
+    stats = wap.run()
     context.log.info("Silver stats: %s", stats)
     return MaterializeResult(
         metadata={
@@ -131,7 +130,9 @@ def balancing_minute(context: AssetExecutionContext) -> MaterializeResult:
             "new_versions": stats["new_versions"],
             "unchanged_skipped": stats["candidates"] - stats["new_versions"],
             "watermark": stats.get("watermark", "unchanged"),
-            "silver_total_rows": exported,
+            "silver_total_rows": stats["silver_total_rows"],
+            "audited_hash": stats["audited_hash"],
+            "audit_report": stats["audit_report"],
         }
     )
 
@@ -287,3 +288,32 @@ class GoldTranslator(DagsterDbtTranslator):
 @dbt_assets(manifest=dbt_project.manifest_path, dagster_dbt_translator=GoldTranslator())
 def gold_models(context: AssetExecutionContext, dbt: DbtCliResource):
     yield from dbt.cli(["build"], context=context).stream()
+
+
+# Soda checks are visible in Dagster in addition to the pre-publication Silver gate.
+def _soda_result(layer: str) -> AssetCheckResult:
+    from gridtime.quality.scan import scan_layer
+
+    report = scan_layer(layer, require_pass=False)
+    return AssetCheckResult(
+        passed=report["passed"],
+        metadata={"checks": len(report["checks"]), "report": report["report_path"]},
+    )
+
+
+@asset_check(asset=BRONZE, blocking=True)
+def soda_bronze() -> AssetCheckResult:
+    return _soda_result("bronze")
+
+
+@asset_check(asset=SILVER)
+def soda_silver() -> AssetCheckResult:
+    return _soda_result("silver")
+
+
+@asset_check(
+    asset=AssetKey(["gold", "fct_quarter_hour"]),
+    additional_deps=[AssetKey(["gold", "fct_revisions"]), AssetKey(["gold", "agg_revision_stats"])],
+)
+def soda_gold() -> AssetCheckResult:
+    return _soda_result("gold")

@@ -16,13 +16,11 @@ Run:  python -m gridtime.transform.silver
 """
 
 import logging
-import os
 from datetime import UTC, datetime
-from pathlib import Path
+from urllib.parse import unquote
 
 import duckdb
 import pyarrow as pa
-import pyarrow.parquet as pq
 from pyiceberg.expressions import (
     And,
     GreaterThan,
@@ -208,11 +206,22 @@ def read_watermark(silver_table) -> datetime:
     return datetime.fromisoformat(value) if value else EPOCH
 
 
-def run() -> dict:
+def run(catalog=None) -> dict:
     """Process Bronze rows received since the last run. Returns run statistics."""
     from gridtime.storage.tables import bronze_table, silver_table
 
-    bronze_t, silver_t = bronze_table(), silver_table()
+    if catalog is None:
+        bronze_t, silver_t = bronze_table(), silver_table()
+    else:
+        from gridtime.storage.tables import BRONZE_TABLE, SILVER_TABLE
+        bronze_t, silver_t = catalog.load_table(BRONZE_TABLE), catalog.load_table(SILVER_TABLE)
+    from pyiceberg.catalog.rest import RestCatalog
+
+    if isinstance(silver_t.catalog, RestCatalog):
+        # Nessie normalizes the URI to /iceberg and returns ref|warehouse as prefix.
+        prefix = unquote(silver_t.catalog.properties.get("prefix", ""))
+        if prefix.split("|", 1)[0] != "silver-wap":
+            raise RuntimeError("Silver writes require the WAP branch; use gridtime.transform.wap")
     watermark = read_watermark(silver_t)
 
     new_bronze = bronze_t.scan(
@@ -255,26 +264,8 @@ def run() -> dict:
     return stats
 
 
-def export_snapshot(path: Path | None = None) -> int:
-    """Write the full Silver table to Parquet for dbt (Gold). Atomic replace.
-
-    Gold runs on DuckDB, which reads this snapshot rather than the Iceberg catalog
-    directly (see docs/decisions/003). Returns the number of rows written.
-    """
-    from gridtime.config import get_settings
-    from gridtime.storage.tables import silver_table
-
-    path = path or get_settings().silver_export_path
-    path.parent.mkdir(parents=True, exist_ok=True)
-    table = silver_table().scan().to_arrow()
-    tmp = path.with_suffix(".parquet.tmp")
-    pq.write_table(table, tmp)
-    os.replace(tmp, path)
-    log.info("Exported %d Silver rows to %s", table.num_rows, path)
-    return table.num_rows
-
-
 if __name__ == "__main__":
+    from gridtime.transform.wap import run
+
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    run()
-    export_snapshot()
+    print(run())

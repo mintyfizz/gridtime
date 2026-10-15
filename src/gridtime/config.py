@@ -18,7 +18,14 @@ class Settings(BaseSettings):
     s3_endpoint: str = "http://localhost:9000"
     s3_bucket: str = "lakehouse"
 
-    # Catalog
+    # Catalog: keep SQLite frozen after migration for recovery.
+    catalog_backend: str = "nessie"
+    nessie_uri: str = "http://localhost:19120"
+    trino_host: str = "localhost"
+    trino_port: int = 8085
+    trino_user: str = "gridtime"
+    wap_branch: str = "silver-wap"
+
     catalog_uri: str = "sqlite:///catalog/catalog.db"
 
     # Elia
@@ -56,7 +63,7 @@ class Settings(BaseSettings):
     def dlq_topic(self) -> str:
         return f"{self.kafka_topic_prefix}.dlq"
 
-    # Local analytics files (Gold layer). Relative paths resolve against the repo root.
+    # Local forecasts, MLflow, audit evidence. Relative paths resolve against the repo root.
     data_dir: str = "data"
 
     @property
@@ -67,15 +74,6 @@ class Settings(BaseSettings):
     def data_path(self) -> Path:
         path = Path(self.data_dir)
         return path if path.is_absolute() else (REPO_ROOT / path)
-
-    @property
-    def silver_export_path(self) -> Path:
-        """Parquet snapshot of Silver that dbt reads to build Gold."""
-        return self.data_path / "silver" / "balancing_minute.parquet"
-
-    @property
-    def gold_db_path(self) -> Path:
-        return self.data_path / "warehouse.duckdb"
 
 
 @lru_cache

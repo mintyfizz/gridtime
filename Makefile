@@ -1,6 +1,6 @@
-.PHONY: up down install init ingest poll sink backfill forecast mlflow peek silver gold orchestrate dashboard test lint
+.PHONY: up down install init ingest poll sink backfill forecast mlflow peek silver gold orchestrate dashboard test lint migrate quality failure-demo
 
-up:            ## Start MinIO, Redpanda and Redpanda Console
+up:            ## Start MinIO, Redpanda, Nessie and Trino
 	docker compose up -d
 
 down:          ## Stop containers (data is kept in the volume)
@@ -36,11 +36,19 @@ mlflow:        ## MLflow UI at http://localhost:5001
 silver:        ## Process new Bronze rows into the bitemporal Silver table
 	uv run python -m gridtime.transform.silver
 
-gold:          ## Build and test the dbt Gold models from the latest Silver snapshot
-	cd transforms && \
-	GRIDTIME_SILVER_PARQUET=$(CURDIR)/data/silver/balancing_minute.parquet \
-	GRIDTIME_GOLD_DB=$(CURDIR)/data/warehouse.duckdb \
-	uv run dbt build --profiles-dir .
+gold:          ## Build and test Gold Iceberg tables through Trino
+	uv run dbt build --project-dir transforms --profiles-dir transforms
+
+migrate:       ## Stop all writers first; register SQLite tables in Nessie and verify
+	uv run python -m gridtime.storage.migrate
+
+quality:       ## Run declarative checks on all published layers
+	uv run python -m gridtime.quality.scan bronze
+	uv run python -m gridtime.quality.scan silver
+	uv run python -m gridtime.quality.scan gold
+
+failure-demo:  ## Stop Dagster first; prove a bad branch cannot reach main
+	uv run python -m gridtime.quality.demo
 
 orchestrate:   ## Run everything on a schedule with Dagster at http://localhost:3000
 	mkdir -p .dagster && cp dagster.yaml .dagster/dagster.yaml

@@ -11,8 +11,8 @@ select
         as share_null_mismatch,
     avg(revision) as mean_revision,
     avg(abs_revision) as mean_abs_revision,
-    quantile_cont(abs_revision, 0.95) as p95_abs_revision,
+    approx_percentile(abs_revision, 0.95) as p95_abs_revision,
     max(abs_revision) as max_abs_revision,
-    median(hours_to_historical) as median_hours_to_historical
+    approx_percentile(hours_to_historical, 0.5) as median_hours_to_historical
 from {{ ref('fct_revisions') }}
 group by measure

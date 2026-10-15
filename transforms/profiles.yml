@@ -2,8 +2,12 @@ gridtime:
   target: local
   outputs:
     local:
-      type: duckdb
-      # Absolute paths are injected by `make gold` and by Dagster (see config.py).
-      path: "{{ env_var('GRIDTIME_GOLD_DB', '../data/warehouse.duckdb') }}"
+      type: trino
+      method: none
+      host: "{{ env_var('TRINO_HOST', 'localhost') }}"
+      port: "{{ env_var('TRINO_PORT', '8085') | int }}"
+      user: "{{ env_var('TRINO_USER', 'gridtime') }}"
+      catalog: lakehouse
       schema: gold
-      threads: 4
+      http_scheme: http
+      threads: 2

@@ -1,5 +1,5 @@
 name: gridtime
-version: "0.3.0"
+version: "0.6.0"
 config-version: 2
 profile: gridtime
 
@@ -28,7 +28,11 @@ vars:
 models:
   gridtime:
     staging:
-      +materialized: view
+      +on_table_exists: replace
+      +materialized: table
       +schema: staging
     marts:
       +materialized: table
+      +properties:
+        format: "'PARQUET'"
+      +on_table_exists: replace
