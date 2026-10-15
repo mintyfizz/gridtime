@@ -11,7 +11,7 @@ if __name__ == "__main__":
             """
             SELECT dataset_id,
                    count(*)                AS rows,
-                   count(DISTINCT valid_time) AS quarter_hours,
+                   count(DISTINCT valid_time) AS distinct_times,
                    min(valid_time)         AS first_valid,
                    max(valid_time)         AS last_valid,
                    max(transaction_time)   AS last_received

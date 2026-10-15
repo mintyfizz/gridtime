@@ -25,7 +25,7 @@ See [docs/architecture.md](docs/architecture.md).
 
 | # | Milestone | New tools | Status |
 |---|-----------|-----------|--------|
-| 1 | Ingest Elia data into Bronze | MinIO, Iceberg (PyIceberg) | In progress |
+| 1 | Ingest Elia data into Bronze | MinIO, Iceberg (PyIceberg) | Done |
 | 2 | Bitemporal Silver layer | – | Planned |
 | 3 | Orchestration + Gold models | Dagster, dbt | Planned |
 | 4 | Streaming buffer | Redpanda | Planned |

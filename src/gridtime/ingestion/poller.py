@@ -51,10 +51,10 @@ def poll_dataset(client: EliaClient, dataset_id: str, lookback: timedelta) -> in
 def run(once: bool) -> None:
     settings = get_settings()
     client = EliaClient(settings.elia_base_url, page_size=settings.elia_page_size)
-    lookback = timedelta(minutes=settings.elia_lookback_minutes)
     try:
         while True:
             for dataset_id in settings.dataset_ids:
+                lookback = timedelta(minutes=settings.lookback_minutes(dataset_id))
                 try:
                     poll_dataset(client, dataset_id, lookback)
                 except Exception:  # one bad dataset must not stop the others

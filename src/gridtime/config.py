@@ -23,11 +23,22 @@ class Settings(BaseSettings):
     elia_datasets: str = "ods175,ods165"
     elia_page_size: int = Field(default=100, le=100)  # API maximum per page
     elia_lookback_minutes: int = 120
+    # Per-dataset overrides, e.g. "ods165=2880". Historical datasets are refreshed
+    # daily and end at yesterday, so they need a longer window than the default.
+    elia_lookback_overrides: str = "ods165=2880"
     poll_interval_seconds: int = 60
 
     @property
     def dataset_ids(self) -> list[str]:
         return [d.strip() for d in self.elia_datasets.split(",") if d.strip()]
+
+    def lookback_minutes(self, dataset_id: str) -> int:
+        overrides = {}
+        for pair in self.elia_lookback_overrides.split(","):
+            if "=" in pair:
+                key, value = pair.split("=", 1)
+                overrides[key.strip()] = int(value)
+        return overrides.get(dataset_id, self.elia_lookback_minutes)
 
     @property
     def warehouse(self) -> str:
