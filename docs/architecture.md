@@ -11,12 +11,28 @@
    - appends the rest to the Bronze Iceberg table
 3. DuckDB reads Bronze through an Iceberg scan for inspection.
 
+## Silver (milestone 2)
+
+`make silver` reads Bronze rows newer than the watermark stored on the latest Silver snapshot,
+maps each payload onto canonical measures, and appends a version only where the value, Elia's
+quality flag or the publication stage changed. See
+[decisions/002](decisions/002-silver-versioning.md).
+
+| Column | Meaning |
+|--------|---------|
+| `valid_from`, `valid_to` | the minute the value describes |
+| `measure`, `value`, `unit` | canonical measure name and its value |
+| `stage` | `near_real_time` (ods175) or `historical` (ods165) |
+| `quality_status` | Elia's own flag: `NotValidated`, `DataIssue`, … |
+| `transaction_time` | when GridTime received this version |
+| `source_dataset`, `payload_hash` | lineage back to the Bronze record |
+
 ## Layers
 
 | Layer | Contents | Rule |
 |-------|----------|------|
 | Bronze | Raw payloads + metadata | Append-only, never updated |
-| Silver | One row per (quarter-hour, measure, version) with `valid_time` and `transaction_time` | Append-only, bitemporal |
+| Silver | One row per (minute, measure, version) with valid time and transaction time | Append-only, bitemporal, change-only |
 | Gold | Analysis-ready models (dbt) | Rebuilt from Silver |
 
 ## Why two times

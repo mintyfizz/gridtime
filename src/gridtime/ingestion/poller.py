@@ -23,6 +23,10 @@ def poll_dataset(client: EliaClient, dataset_id: str, lookback: timedelta) -> in
     received_at = datetime.now(UTC)
     since = received_at - lookback
     raw_records = client.fetch_since(dataset_id, since)
+    if not raw_records:
+        # Elia occasionally serves an empty page while a dataset refreshes; the next
+        # poll catches up. Logged so a real outage doesn't go unnoticed.
+        log.warning("%s: no records since %s", dataset_id, since.isoformat())
 
     rows: list[BronzeRow] = []
     rejected = 0

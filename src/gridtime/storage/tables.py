@@ -12,13 +12,15 @@ from pyiceberg.partitioning import PartitionField, PartitionSpec
 from pyiceberg.schema import Schema
 from pyiceberg.table import Table
 from pyiceberg.transforms import DayTransform, IdentityTransform
-from pyiceberg.types import NestedField, StringType, TimestamptzType
+from pyiceberg.types import DoubleType, NestedField, StringType, TimestamptzType
 
 from gridtime.ingestion.schemas import BronzeRow
 from gridtime.storage.catalog import get_catalog
 
 NAMESPACE = "bronze"
 BRONZE_TABLE = f"{NAMESPACE}.elia_raw"
+SILVER_NAMESPACE = "silver"
+SILVER_TABLE = f"{SILVER_NAMESPACE}.balancing_minute"
 
 BRONZE_SCHEMA = Schema(
     NestedField(1, "dataset_id", StringType(), required=True),
@@ -48,16 +50,45 @@ ARROW_SCHEMA = pa.schema(
 )
 
 
+SILVER_SCHEMA = Schema(
+    NestedField(1, "valid_from", TimestamptzType(), required=True),
+    NestedField(2, "valid_to", TimestamptzType(), required=True),
+    NestedField(3, "quarter_hour", TimestamptzType(), required=False),
+    NestedField(4, "measure", StringType(), required=True),
+    NestedField(5, "value", DoubleType(), required=False),
+    NestedField(6, "unit", StringType(), required=True),
+    NestedField(7, "stage", StringType(), required=True),
+    NestedField(8, "quality_status", StringType(), required=False),
+    NestedField(9, "transaction_time", TimestamptzType(), required=True),
+    NestedField(10, "source_dataset", StringType(), required=True),
+    NestedField(11, "payload_hash", StringType(), required=True),
+)
+
+# Partition by the day the value describes: as-of queries ask about valid-time
+# ranges, and revisions of a minute land in the same partition as the original.
+SILVER_PARTITIONING = PartitionSpec(
+    PartitionField(source_id=1, field_id=1000, transform=DayTransform(), name="valid_day"),
+)
+
+
 def create_tables() -> None:
     catalog = get_catalog()
     catalog.create_namespace_if_not_exists(NAMESPACE)
     catalog.create_table_if_not_exists(
         BRONZE_TABLE, schema=BRONZE_SCHEMA, partition_spec=BRONZE_PARTITIONING
     )
+    catalog.create_namespace_if_not_exists(SILVER_NAMESPACE)
+    catalog.create_table_if_not_exists(
+        SILVER_TABLE, schema=SILVER_SCHEMA, partition_spec=SILVER_PARTITIONING
+    )
 
 
 def bronze_table() -> Table:
     return get_catalog().load_table(BRONZE_TABLE)
+
+
+def silver_table() -> Table:
+    return get_catalog().load_table(SILVER_TABLE)
 
 
 def append_bronze(rows: list[BronzeRow]) -> None:
@@ -81,4 +112,4 @@ def existing_hashes(dataset_id: str, since: datetime) -> set[str]:
 
 if __name__ == "__main__":
     create_tables()
-    print(f"Created {BRONZE_TABLE}")
+    print(f"Created {BRONZE_TABLE} and {SILVER_TABLE}")

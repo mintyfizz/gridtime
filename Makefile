@@ -1,4 +1,4 @@
-.PHONY: up down install init ingest poll peek dashboard test lint
+.PHONY: up down install init ingest poll peek silver dashboard test lint
 
 up:            ## Start MinIO and create the bucket
 	docker compose up -d
@@ -17,6 +17,9 @@ ingest:        ## Poll Elia once
 
 poll:          ## Poll Elia continuously
 	uv run python -m gridtime.ingestion.poller
+
+silver:        ## Process new Bronze rows into the bitemporal Silver table
+	uv run python -m gridtime.transform.silver
 
 peek:          ## Show what's in Bronze
 	uv run python -m gridtime.storage.peek

@@ -1,109 +1,101 @@
-"""Queries behind the dashboard. Pure functions over an Arrow table, so they are testable.
+"""Queries behind the dashboard. Pure functions over Arrow tables, so they are testable.
 
-Milestone 1 reads Bronze directly and parses the JSON payloads. Once the Silver
-layer exists (milestone 2) these queries move there.
+The dashboard reads Silver for everything about values, and Bronze only for
+pipeline health (what each poll wrote).
 """
+
+from datetime import datetime
 
 import duckdb
 import pyarrow as pa
 
-FEEDS = {
-    "ods175": "Preliminary (ods175)",
-    "ods165": "Validated (ods165)",
+from gridtime.transform import asof
+from gridtime.transform.measures import BY_NAME
+
+STAGE_LABELS = {
+    "near_real_time": "Near real-time (ods175)",
+    "historical": "Historical (ods165)",
 }
 
-# Fields present under the same name in both feeds.
-MEASURES = {
-    "systemimbalance": ("System imbalance", "MW"),
-    "ace": ("Area control error", "MW"),
-    "marginalincrementalprice": ("Upward activation price", "€/MWh"),
-    "marginaldecrementalprice": ("Downward activation price", "€/MWh"),
-}
+DASHBOARD_MEASURES = [
+    "system_imbalance",
+    "ace",
+    "price_up_marginal",
+    "price_down_marginal",
+]
+
+
+def label(measure: str) -> str:
+    return BY_NAME[measure].label
+
+
+def unit(measure: str) -> str:
+    return BY_NAME[measure].unit.replace("EUR", "€")
 
 
 def _to_table(rel: duckdb.DuckDBPyRelation) -> pa.Table:
-    """DuckDB >= 1.4 returns a stream from .arrow(); always hand back a Table."""
     result = rel.arrow()
     return result.read_all() if hasattr(result, "read_all") else result
 
 
-def _con(bronze: pa.Table) -> duckdb.DuckDBPyConnection:
+def known_at(silver: pa.Table, measure: str, at: datetime | None) -> pa.Table:
+    """One measure, as GridTime knew it at `at` (None = now)."""
+    snapshot = asof.as_of(silver, at)
+    return snapshot.filter(pa.compute.equal(snapshot["measure"], measure))
+
+
+def version_distribution(silver: pa.Table, measure: str) -> pa.Table:
+    """How many minutes have 1, 2, 3… stored versions of this measure."""
     con = duckdb.connect()
-    con.register("bronze", bronze)
-    return con
-
-
-def current_view(bronze: pa.Table) -> pa.Table:
-    """Latest known version of every (feed, minute), with measures parsed out."""
-    measure_cols = ",\n".join(
-        f"TRY_CAST(json_extract(payload, '$.{m}') AS DOUBLE) AS {m}" for m in MEASURES
-    )
+    con.register("silver", silver)
     return _to_table(
-        _con(bronze).sql(
-            f"""
-        WITH parsed AS (
-            SELECT dataset_id,
-                   valid_time,
-                   transaction_time,
-                   json_extract_string(payload, '$.qualitystatus') AS qualitystatus,
-                   {measure_cols},
-                   row_number() OVER (
-                       PARTITION BY dataset_id, valid_time ORDER BY transaction_time DESC
-                   ) AS rn
-            FROM bronze
-        )
-        SELECT * EXCLUDE (rn) FROM parsed WHERE rn = 1 ORDER BY valid_time
-        """
-        )
-    )
-
-
-def version_counts(bronze: pa.Table) -> pa.Table:
-    """How many distinct versions each minute has per feed (1 = never revised)."""
-    return _to_table(
-        _con(bronze).sql(
+        con.sql(
             """
-        SELECT dataset_id, versions, count(*) AS minutes
-        FROM (
-            SELECT dataset_id, valid_time, count(*) AS versions
-            FROM bronze GROUP BY ALL
-        )
-        GROUP BY ALL ORDER BY dataset_id, versions
-        """
+            SELECT versions, count(*) AS minutes
+            FROM (
+                SELECT valid_from, count(*) AS versions
+                FROM silver WHERE measure = $measure GROUP BY valid_from
+            )
+            GROUP BY versions ORDER BY versions
+            """,
+            params={"measure": measure},
         )
     )
 
 
-def revisions(current: pa.Table, measure: str) -> pa.Table:
-    """Minutes present in both feeds: preliminary vs validated value for one measure."""
-    if measure not in MEASURES:
-        raise ValueError(f"unknown measure {measure}")
+def quality_by_stage(current: pa.Table) -> pa.Table:
     con = duckdb.connect()
     con.register("cur", current)
     return _to_table(
         con.sql(
-            f"""
-        SELECT p.valid_time,
-               p.{measure} AS preliminary,
-               v.{measure} AS validated,
-               v.{measure} - p.{measure} AS revision
-        FROM cur p
-        JOIN cur v USING (valid_time)
-        WHERE p.dataset_id = 'ods175' AND v.dataset_id = 'ods165'
-          AND p.{measure} IS NOT NULL AND v.{measure} IS NOT NULL
-        ORDER BY valid_time
-        """
+            """
+            SELECT stage, coalesce(quality_status, 'missing') AS quality_status,
+                   count(*) AS value_count
+            FROM cur GROUP BY ALL ORDER BY stage, quality_status
+            """
         )
     )
 
 
+def transaction_times(silver: pa.Table) -> list[datetime]:
+    """Every moment at which Silver learned something new, oldest first."""
+    con = duckdb.connect()
+    con.register("silver", silver)
+    result = _to_table(
+        con.sql("SELECT DISTINCT transaction_time FROM silver ORDER BY transaction_time")
+    )
+    return result.column("transaction_time").to_pylist()
+
+
 def ingest_batches(bronze: pa.Table) -> pa.Table:
-    """Rows written per poll, per feed."""
+    """Rows written per poll, per feed (from Bronze)."""
+    con = duckdb.connect()
+    con.register("bronze", bronze)
     return _to_table(
-        _con(bronze).sql(
+        con.sql(
             """
-        SELECT dataset_id, transaction_time, count(*) AS rows
-        FROM bronze GROUP BY ALL ORDER BY transaction_time
-        """
+            SELECT dataset_id, transaction_time, count(*) AS rows
+            FROM bronze GROUP BY ALL ORDER BY transaction_time
+            """
         )
     )
