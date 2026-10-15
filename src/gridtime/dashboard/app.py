@@ -11,6 +11,7 @@ import pyarrow as pa
 import pyarrow.compute as pc
 import streamlit as st
 
+from gridtime.config import get_settings
 from gridtime.dashboard import data
 from gridtime.storage.tables import bronze_table, silver_table
 from gridtime.transform import asof
@@ -198,6 +199,77 @@ else:
     )
     zero = alt.Chart().mark_rule(color="gray", strokeDash=[4, 4]).encode(y=alt.datum(0))
     st.altair_chart(alt.layer(rev_chart, zero, data=rev), width="stretch")
+
+# ---- forecasts
+st.subheader("Forecast: system imbalance, next quarter-hours")
+forecast_dir = get_settings().data_path / "forecast"
+live_path, metrics_path = forecast_dir / "live.parquet", forecast_dir / "metrics.parquet"
+if not live_path.exists():
+    st.info("No forecasts yet. Dagster trains the models daily (or run "
+            "`python -m gridtime.forecasting.pipeline backtest`, then `... live`).")
+else:
+    live = pd.read_parquet(live_path)
+    gb = live[live["model"] == "gradient_boosting"]
+    latest = gb[gb["made_at"] == gb["made_at"].max()].sort_values("horizon")
+    cols = st.columns(len(latest) + 1)
+    for col, r in zip(cols, latest.itertuples(), strict=False):
+        col.metric(
+            f"{pd.Timestamp(r.target_qh).tz_convert(TZ):%H:%M}–"
+            f"{(pd.Timestamp(r.target_qh) + pd.Timedelta(minutes=15)).tz_convert(TZ):%H:%M}",
+            f"{r.q50:,.0f} MW",
+            help=f"80% interval {r.q10:,.0f} to {r.q90:,.0f} MW · made {local(r.made_at)} "
+                 f"with {int(r.lag_1_minutes_known)}/15 minutes of the last quarter-hour known",
+        )
+    cols[-1].caption(
+        "Gradient boosting trained on revised history, fed with what GridTime knows *now*. "
+        "Every forecast is logged and scored once the quarter-hour has happened."
+    )
+
+    # Score live forecasts against what actually happened.
+    imb = current.filter(pc.equal(current["measure"], "system_imbalance")).to_pandas()
+    imb["qh"] = imb["valid_from"].dt.floor("15min")
+    actual = imb.groupby("qh")["value"].agg(["mean", "size"])
+    actual = actual[actual["size"] >= 13]["mean"].rename("actual")
+    h1 = gb[gb["horizon"] == 1].drop_duplicates("target_qh", keep="first")  # earliest forecast
+    scored = h1.join(actual, on="target_qh").dropna(subset=["actual"])
+    if len(scored) >= 2:
+        s1, s2, s3 = st.columns(3)
+        err = scored["q50"] - scored["actual"]
+        s1.metric("Live forecasts scored", f"{len(scored)}")
+        s2.metric("Live MAE (next QH)", f"{err.abs().mean():,.0f} MW")
+        inside = ((scored["actual"] >= scored["q10"]) & (scored["actual"] <= scored["q90"])).mean()
+        s3.metric("Inside 80% interval", f"{inside:.0%}")
+        recent = scored[scored["target_qh"] >= scored["target_qh"].max() - pd.Timedelta(hours=24)]
+        band = alt.Chart(recent).mark_area(opacity=0.25, color=colors["near_real_time"]).encode(
+            x=alt.X("target_qh:T", title=None), y=alt.Y("q10:Q", title="MW"), y2="q90:Q"
+        )
+        fc = alt.Chart(recent).mark_line(strokeWidth=2, color=colors["near_real_time"]).encode(
+            x="target_qh:T", y="q50:Q",
+            tooltip=[alt.Tooltip("target_qh:T", title="Quarter-hour", format="%d %b %H:%M"),
+                     alt.Tooltip("q50:Q", title="Forecast", format=",.0f"),
+                     alt.Tooltip("actual:Q", title="Actual", format=",.0f")],
+        )
+        act = alt.Chart(recent).mark_line(strokeWidth=2, color=colors["historical"]).encode(
+            x="target_qh:T", y="actual:Q"
+        )
+        st.altair_chart(alt.layer(band, fc, act).properties(height=260), width="stretch")
+        st.caption("Blue: forecast made before the quarter-hour, with 80% interval. "
+                   "Orange: what happened.")
+    else:
+        st.caption("Live forecasts are scored once their quarter-hour is complete.")
+
+    if metrics_path.exists():
+        with st.expander("Backtest results (revised data vs as known at decision time)"):
+            m = pd.read_parquet(metrics_path)
+            show = m[["mode", "model", "horizon", "n", "mae", "skill_vs_persistence",
+                      "sign_accuracy", "coverage_80"]].sort_values(["horizon", "mode", "mae"])
+            st.dataframe(show.round(3), hide_index=True, width="stretch")
+            st.caption(
+                "revised: walk-forward over 4 weeks with final values (the usual, optimistic "
+                "setup). as_known: decisions while GridTime was live, features as known at that "
+                "moment. revised_same_period: the same decisions with final values; the gap to "
+                "as_known is the cost of real data availability."
+            )
 
 # ---- pipeline health
 st.subheader("Pipeline")

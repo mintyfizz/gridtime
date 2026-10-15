@@ -25,7 +25,11 @@ def test_definitions_load():
 
 def test_schedules():
     crons = {s.job_name: s.cron_schedule for s in defs.schedules}
-    assert crons == {"poll_nrt": "*/5 * * * *", "poll_historical": "7 * * * *"}
+    assert crons == {
+        "poll_nrt": "*/5 * * * *",
+        "poll_historical": "7 * * * *",
+        "retrain_forecast": "13 6 * * *",
+    }
 
 
 def test_gold_depends_on_silver():
@@ -35,6 +39,7 @@ def test_gold_depends_on_silver():
     assert stg in graph.get(AssetKey(["gold", "fct_revisions"])).parent_keys
     assert graph.get(assets.SILVER).parent_keys == {assets.BRONZE}
     assert graph.get(assets.BRONZE).parent_keys == {assets.STREAM_NRT, assets.STREAM_HISTORICAL}
+    assert graph.get(assets.FORECAST_LIVE).parent_keys == {assets.SILVER, assets.FORECAST_MODEL}
 
 
 @pytest.fixture

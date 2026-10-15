@@ -54,6 +54,15 @@ watermark follows `ingested_at`. Dagster graph: `stream/elia_ods175`, `stream/el
 (scheduled) → `bronze/elia_raw` (eager, checks: consumer lag = 0, freshness) → Silver → Gold.
 See [decisions/004](decisions/004-streaming-buffer.md).
 
+## Forecasting (milestone 5)
+
+`forecast/model` (daily, 06:13) retrains persistence, seasonal-naive, climatology and
+quantile gradient boosting, runs the revised walk-forward and the as-known backtest, logs to
+MLflow and saves the models. `forecast/live` (eager, after every Silver update) forecasts the
+next two quarter-hours from what is known at that moment and appends to the live log.
+Outputs are Parquet under `data/forecast/`. See
+[decisions/005](decisions/005-forecasting-and-as-known-evaluation.md).
+
 ## Layers
 
 | Layer | Contents | Rule |

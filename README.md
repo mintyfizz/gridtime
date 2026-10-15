@@ -37,7 +37,7 @@ See [docs/architecture.md](docs/architecture.md).
 | 2 | Bitemporal Silver layer | – | Done |
 | 3 | Orchestration + Gold models | Dagster, dbt | Done |
 | 4 | Streaming buffer | Redpanda | Done |
-| 5 | Forecasting + evaluation | statsforecast, mlforecast, MLflow | Planned |
+| 5 | Forecasting + evaluation | scikit-learn, MLflow | Done |
 | 6 | Platform upgrade | Trino, Nessie, Soda | Planned |
 
 ## Quick start
@@ -50,6 +50,7 @@ make up        # start MinIO and create the lakehouse bucket
 make install   # install Python dependencies
 make init      # create the Iceberg tables
 make ingest    # poll Elia once into Redpanda, then drain the topics into Bronze
+make backfill  # optional: 8 weeks of Elia history (needed for forecasting)
 make silver    # turn new Bronze rows into bitemporal Silver versions
 make peek      # query Bronze with DuckDB
 make dashboard # open the dashboard at http://localhost:8501
@@ -72,6 +73,32 @@ has, appends the rest and only then commits offsets: at-least-once delivery, exa
 storage. See [decisions/004](docs/decisions/004-streaming-buffer.md).
 
 ![Observations in the elia.ods175 topic](docs/img/redpanda_messages.png)
+
+## Forecasting
+
+GridTime forecasts the mean system imbalance of the next two quarter-hours and evaluates the
+forecasts **as they would have been known**. The same feature function runs on the latest
+data (the usual, optimistic backtest) and on Silver *as of* each decision time, where the last
+minutes of the previous quarter-hour have often not been published or polled yet.
+
+| Next quarter-hour (4-week walk-forward, 2,640 decisions) | MAE | Skill vs persistence | Sign right | 80% interval coverage |
+|---|---|---|---|---|
+| Gradient boosting (quantile, conformal) | 69 MW | **+18%** | 82% | 81% |
+| Persistence | 85 MW | 0% | 80% | 82% |
+| Climatology (by quarter-hour of day) | 136 MW | −61% | 57% | 80% |
+| Same quarter-hour yesterday | 175 MW | −106% | 57% | 83% |
+
+Imbalance is persistent, not daily-seasonal: yesterday's value is worse than no model. The
+as-known evaluation and the log of live forecasts (scored once each quarter-hour completes)
+grow every day; the dashboard shows both. See
+[decisions/005](docs/decisions/005-forecasting-and-as-known-evaluation.md).
+
+![Live forecast and backtest results in the dashboard](docs/img/forecast.png)
+
+```bash
+make forecast   # retrain, run both backtests, make a live forecast
+make mlflow     # MLflow UI at http://localhost:5001
+```
 
 ## Gold models (dbt)
 
@@ -115,6 +142,7 @@ src/gridtime/
   storage/             Iceberg catalog connection and table definitions
   transform/           Bronze → Silver: canonical measures, versioning, as-of reads
   orchestration/       Dagster assets, schedules, checks
+  forecasting/         features, models, revised + as-known backtests, live forecasts
   dashboard/           Streamlit app and the queries behind it
 transforms/            dbt project (Gold)
 tests/                 unit tests

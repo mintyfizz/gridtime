@@ -1,4 +1,4 @@
-.PHONY: up down install init ingest poll sink peek silver gold orchestrate dashboard test lint
+.PHONY: up down install init ingest poll sink backfill forecast mlflow peek silver gold orchestrate dashboard test lint
 
 up:            ## Start MinIO, Redpanda and Redpanda Console
 	docker compose up -d
@@ -22,6 +22,16 @@ poll:          ## Publish Elia observations to Redpanda continuously
 
 sink:          ## Consume Redpanda into Bronze continuously (don't run alongside Dagster)
 	uv run python -m gridtime.ingestion.bronze_sink
+
+backfill:      ## Publish 8 weeks of Elia history to Redpanda (the sink ingests it)
+	uv run python -m gridtime.ingestion.backfill --days 56
+
+forecast:      ## Retrain, run both backtests, then make a live forecast
+	uv run python -m gridtime.forecasting.pipeline backtest
+	uv run python -m gridtime.forecasting.pipeline live
+
+mlflow:        ## MLflow UI at http://localhost:5001
+	uv run mlflow ui --backend-store-uri sqlite:///$(CURDIR)/data/mlflow.db --port 5001
 
 silver:        ## Process new Bronze rows into the bitemporal Silver table
 	uv run python -m gridtime.transform.silver

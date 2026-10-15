@@ -36,6 +36,8 @@ STREAM_NRT = AssetKey(["stream", "elia_ods175"])
 STREAM_HISTORICAL = AssetKey(["stream", "elia_ods165"])
 BRONZE = AssetKey(["bronze", "elia_raw"])
 SILVER = AssetKey(["silver", "balancing_minute"])  # same key dbt uses for its source
+FORECAST_MODEL = AssetKey(["forecast", "model"])
+FORECAST_LIVE = AssetKey(["forecast", "live"])
 
 NRT_MAX_AGE = timedelta(minutes=30)
 
@@ -130,6 +132,59 @@ def balancing_minute(context: AssetExecutionContext) -> MaterializeResult:
             "unchanged_skipped": stats["candidates"] - stats["new_versions"],
             "watermark": stats.get("watermark", "unchanged"),
             "silver_total_rows": exported,
+        }
+    )
+
+
+# ---------------------------------------------------------------- forecasting
+
+
+@asset(
+    key=FORECAST_MODEL,
+    deps=[SILVER],
+    group_name="forecast",
+    kinds={"python", "sklearn", "mlflow"},
+    description=(
+        "Retrain the quarter-hour imbalance forecasters and run both backtests "
+        "(revised data, and as known at each decision time). Logged to MLflow."
+    ),
+)
+def forecast_model() -> MaterializeResult:
+    from gridtime.forecasting import pipeline
+
+    result = pipeline.run_backtest()
+    m = result["metrics"]
+    md = {k: v for k, v in result["summary"].items() if isinstance(v, int | float | str)}
+    for mode in ("revised", "as_known", "revised_same_period"):
+        row = m[(m["mode"] == mode) & (m["model"] == "gradient_boosting") & (m["horizon"] == 1)]
+        if len(row):
+            md[f"{mode}_h1_mae"] = round(float(row["mae"].iloc[0]), 2)
+            md[f"{mode}_h1_skill"] = round(float(row["skill_vs_persistence"].iloc[0]), 3)
+    md["metrics"] = MetadataValue.md(
+        m[m["horizon"] == 1].round(3).to_markdown(index=False) if len(m) else "no metrics"
+    )
+    return MaterializeResult(metadata=md)
+
+
+@asset(
+    key=FORECAST_LIVE,
+    deps=[SILVER, FORECAST_MODEL],
+    group_name="forecast",
+    kinds={"python", "parquet"},
+    automation_condition=AutomationCondition.eager(),
+    description="Forecast the next two quarter-hours from what is known now; append to the log.",
+)
+def forecast_live() -> MaterializeResult:
+    from gridtime.forecasting import pipeline
+
+    new = pipeline.run_live()
+    gb = new[(new["model"] == "gradient_boosting") & (new["horizon"] == 1)].iloc[0]
+    return MaterializeResult(
+        metadata={
+            "target_qh": MetadataValue.timestamp(gb["target_qh"].to_pydatetime()),
+            "forecast_mw": round(float(gb["q50"]), 1),
+            "interval_80": f"[{gb['q10']:.0f}, {gb['q90']:.0f}] MW",
+            "lag_1_minutes_known": int(gb["lag_1_minutes_known"]),
         }
     )
 

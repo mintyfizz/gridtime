@@ -6,6 +6,8 @@ Schedules (Europe/Brussels) publish Elia observations to Redpanda:
   * poll_nrt          every 5 minutes   (ods175 near real-time)
   * poll_historical   hourly at :07     (ods165, refreshed once a day by Elia)
 The Bronze sink, Silver and Gold then rebuild automatically (eager automation).
+  * retrain_forecast  daily at 06:13    (retrain + backtests; live forecasts follow
+                                          every Silver update)
 """
 
 import os
@@ -34,6 +36,9 @@ poll_nrt = define_asset_job("poll_nrt", selection=AssetSelection.assets(assets.S
 poll_historical = define_asset_job(
     "poll_historical", selection=AssetSelection.assets(assets.STREAM_HISTORICAL)
 )
+retrain_forecast = define_asset_job(
+    "retrain_forecast", selection=AssetSelection.assets(assets.FORECAST_MODEL)
+)
 
 defs = Definitions(
     assets=[
@@ -42,13 +47,15 @@ defs = Definitions(
         assets.elia_raw,
         assets.balancing_minute,
         assets.gold_models,
+        assets.forecast_model,
+        assets.forecast_live,
     ],
     asset_checks=[
         assets.stream_fully_consumed,
         assets.nrt_is_fresh,
         assets.silver_has_no_duplicate_versions,
     ],
-    jobs=[poll_nrt, poll_historical],
+    jobs=[poll_nrt, poll_historical, retrain_forecast],
     schedules=[
         ScheduleDefinition(
             job=poll_nrt,
@@ -59,6 +66,12 @@ defs = Definitions(
         ScheduleDefinition(
             job=poll_historical,
             cron_schedule="7 * * * *",
+            execution_timezone="Europe/Brussels",
+            default_status=DefaultScheduleStatus.RUNNING,
+        ),
+        ScheduleDefinition(
+            job=retrain_forecast,
+            cron_schedule="13 6 * * *",
             execution_timezone="Europe/Brussels",
             default_status=DefaultScheduleStatus.RUNNING,
         ),
