@@ -24,7 +24,7 @@ know it yet:
 
 ```
 Elia API → pollers → Bronze (raw, append-only) → Silver (bitemporal) → Gold (dbt) → analysis
-                         storage: MinIO (S3) · catalog: PyIceberg SQL catalog
+            storage: MinIO (S3) + Iceberg · Gold: dbt on DuckDB · orchestration: Dagster
 ```
 
 See [docs/architecture.md](docs/architecture.md).
@@ -35,7 +35,7 @@ See [docs/architecture.md](docs/architecture.md).
 |---|-----------|-----------|--------|
 | 1 | Ingest Elia data into Bronze | MinIO, Iceberg (PyIceberg) | Done |
 | 2 | Bitemporal Silver layer | – | Done |
-| 3 | Orchestration + Gold models | Dagster, dbt | Planned |
+| 3 | Orchestration + Gold models | Dagster, dbt | Done |
 | 4 | Streaming buffer | Redpanda | Planned |
 | 5 | Forecasting + evaluation | statsforecast, mlforecast, MLflow | Planned |
 | 6 | Platform upgrade | Trino, Nessie, Soda | Planned |
@@ -55,6 +55,26 @@ make peek      # query Bronze with DuckDB
 make dashboard # open the dashboard at http://localhost:8501
 ```
 
+Or let Dagster run it all on a schedule (Bronze every 5 min / hourly, Silver and Gold
+rebuilt automatically after each poll):
+
+```bash
+make orchestrate   # Dagster UI at http://localhost:3000
+```
+
+![Dagster asset lineage: Bronze → Silver → Gold, with checks](docs/img/dagster_lineage.png)
+
+## Gold models (dbt)
+
+| Model | Grain | What it answers |
+|-------|-------|-----------------|
+| `fct_balancing_minute` | minute | Latest known value of all 12 measures, wide |
+| `fct_quarter_hour` | quarter-hour | Imbalance and prices at settlement resolution |
+| `fct_revisions` | minute × measure | First near-real-time value vs historical value |
+| `agg_revision_stats` | measure | How often and how much Elia revises each measure |
+
+Every model is tested (`make gold`); in Dagster the dbt tests appear as asset checks.
+
 MinIO console: http://localhost:9001 (credentials in `.env`).
 
 ## Querying the past
@@ -70,6 +90,12 @@ asof.history(silver, datetime(2026, 10, 15, 12, 0, tzinfo=UTC), "system_imbalanc
 asof.revisions(silver, "system_imbalance")                       # first published vs historical
 ```
 
+## Troubleshooting
+
+- **`uv sync` fails building `dbt-core-experimental-parser` with an SSL certificate error
+  (macOS).** Point the build at certifi's bundle:
+  `SSL_CERT_FILE=$(uv run python -m certifi) uv sync`
+
 ## Repository layout
 
 ```
@@ -78,7 +104,9 @@ src/gridtime/
   ingestion/           Elia client, payload schemas, poller
   storage/             Iceberg catalog connection and table definitions
   transform/           Bronze → Silver: canonical measures, versioning, as-of reads
+  orchestration/       Dagster assets, schedules, checks
   dashboard/           Streamlit app and the queries behind it
+transforms/            dbt project (Gold)
 tests/                 unit tests
 docs/                  architecture and decision records
 ```

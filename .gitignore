@@ -8,3 +8,9 @@ catalog/
 data/
 .DS_Store
 .shots/
+.dagster/
+transforms/target/
+transforms/logs/
+transforms/dbt_packages/
+logs/
+transforms/.user.yml

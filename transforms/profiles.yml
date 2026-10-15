@@ -1,0 +1,9 @@
+gridtime:
+  target: local
+  outputs:
+    local:
+      type: duckdb
+      # Absolute paths are injected by `make gold` and by Dagster (see config.py).
+      path: "{{ env_var('GRIDTIME_GOLD_DB', '../data/warehouse.duckdb') }}"
+      schema: gold
+      threads: 4

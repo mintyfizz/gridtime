@@ -7,6 +7,7 @@ Run forever:     python -m gridtime.ingestion.poller
 import argparse
 import logging
 import time
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 from pydantic import ValidationError
@@ -19,7 +20,17 @@ from gridtime.storage.tables import append_bronze, existing_hashes
 log = logging.getLogger("gridtime.poller")
 
 
-def poll_dataset(client: EliaClient, dataset_id: str, lookback: timedelta) -> int:
+@dataclass(frozen=True)
+class PollStats:
+    dataset_id: str
+    fetched: int
+    new: int
+    duplicate: int
+    rejected: int
+    received_at: datetime
+
+
+def poll_dataset(client: EliaClient, dataset_id: str, lookback: timedelta) -> PollStats:
     received_at = datetime.now(UTC)
     since = received_at - lookback
     raw_records = client.fetch_since(dataset_id, since)
@@ -45,11 +56,19 @@ def poll_dataset(client: EliaClient, dataset_id: str, lookback: timedelta) -> in
     new_rows = [r for r in rows if r.payload_hash not in seen]
     append_bronze(new_rows)
 
+    stats = PollStats(
+        dataset_id=dataset_id,
+        fetched=len(raw_records),
+        new=len(new_rows),
+        duplicate=len(rows) - len(new_rows),
+        rejected=rejected,
+        received_at=received_at,
+    )
     log.info(
         "%s: fetched=%d new=%d duplicate=%d rejected=%d",
-        dataset_id, len(raw_records), len(new_rows), len(rows) - len(new_rows), rejected,
+        dataset_id, stats.fetched, stats.new, stats.duplicate, stats.rejected,
     )
-    return len(new_rows)
+    return stats
 
 
 def run(once: bool) -> None:

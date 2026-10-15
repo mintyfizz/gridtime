@@ -27,13 +27,28 @@ quality flag or the publication stage changed. See
 | `transaction_time` | when GridTime received this version |
 | `source_dataset`, `payload_hash` | lineage back to the Bronze record |
 
+## Orchestration and Gold (milestone 3)
+
+`make orchestrate` starts Dagster. The asset graph:
+
+```
+bronze/elia_nrt ─────────┐
+  (every 5 min)          ├─► silver/balancing_minute ─► staging/stg_silver__versions ─┬─► gold/fct_balancing_minute ─► gold/fct_quarter_hour
+bronze/elia_historical ──┘     (eager)                       (dbt)                   └─► gold/fct_revisions ─► gold/agg_revision_stats
+  (hourly at :07)
+```
+
+Runs are serialised (`dagster.yaml`, one concurrent run). Checks: near-real-time freshness
+(< 30 min), no duplicate Silver versions, and every dbt test. See
+[decisions/003](decisions/003-orchestration-and-gold.md).
+
 ## Layers
 
 | Layer | Contents | Rule |
 |-------|----------|------|
 | Bronze | Raw payloads + metadata | Append-only, never updated |
 | Silver | One row per (minute, measure, version) with valid time and transaction time | Append-only, bitemporal, change-only |
-| Gold | Analysis-ready models (dbt) | Rebuilt from Silver |
+| Gold | dbt models on DuckDB (`data/warehouse.duckdb`) | Rebuilt from a Silver snapshot after every change |
 
 ## Why two times
 

@@ -16,10 +16,13 @@ Run:  python -m gridtime.transform.silver
 """
 
 import logging
+import os
 from datetime import UTC, datetime
+from pathlib import Path
 
 import duckdb
 import pyarrow as pa
+import pyarrow.parquet as pq
 from pyiceberg.expressions import And, GreaterThan, GreaterThanOrEqual, LessThanOrEqual
 
 from gridtime.transform.measures import STAGES, mapping_rows
@@ -220,6 +223,26 @@ def run() -> dict:
     return stats
 
 
+def export_snapshot(path: Path | None = None) -> int:
+    """Write the full Silver table to Parquet for dbt (Gold). Atomic replace.
+
+    Gold runs on DuckDB, which reads this snapshot rather than the Iceberg catalog
+    directly (see docs/decisions/003). Returns the number of rows written.
+    """
+    from gridtime.config import get_settings
+    from gridtime.storage.tables import silver_table
+
+    path = path or get_settings().silver_export_path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    table = silver_table().scan().to_arrow()
+    tmp = path.with_suffix(".parquet.tmp")
+    pq.write_table(table, tmp)
+    os.replace(tmp, path)
+    log.info("Exported %d Silver rows to %s", table.num_rows, path)
+    return table.num_rows
+
+
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     run()
+    export_snapshot()

@@ -1,0 +1,49 @@
+version: 2
+
+models:
+  - name: stg_silver__versions
+    description: Every stored Silver version, typed. One row per (minute, measure, version).
+    columns:
+      - name: valid_from
+        tests: [not_null]
+      - name: measure
+        tests: [not_null]
+      - name: transaction_time
+        tests: [not_null]
+      - name: stage
+        tests:
+          - accepted_values:
+              arguments:
+                values: ["near_real_time", "historical"]
+
+  - name: fct_balancing_minute
+    description: Latest known value of every measure, one row per minute.
+    columns:
+      - name: valid_from
+        tests: [unique, not_null]
+      - name: known_since
+        tests: [not_null]
+
+  - name: fct_quarter_hour
+    description: Quarter-hour aggregates of the latest known values.
+    columns:
+      - name: quarter_hour
+        tests: [unique, not_null]
+      - name: minutes_observed
+        tests: [not_null]
+
+  - name: fct_revisions
+    description: First near-real-time publication vs latest historical value, per minute and measure.
+    columns:
+      - name: valid_from
+        tests: [not_null]
+      - name: measure
+        tests: [not_null]
+      - name: first_seen
+        tests: [not_null]
+
+  - name: agg_revision_stats
+    description: Revision statistics per measure.
+    columns:
+      - name: measure
+        tests: [unique, not_null]

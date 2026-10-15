@@ -1,0 +1,18 @@
+version: 2
+
+sources:
+  - name: silver
+    description: >
+      Bitemporal Silver layer. One row per (minute, measure, version), written by
+      `gridtime.transform.silver` and exported as a Parquet snapshot for DuckDB.
+    meta:
+      external_location: "read_parquet('{{ env_var('GRIDTIME_SILVER_PARQUET', '../data/silver/balancing_minute.parquet') }}')"
+    tables:
+      - name: balancing_minute
+        columns:
+          - name: valid_from
+            description: Start of the minute the value describes.
+          - name: transaction_time
+            description: When GridTime received this version.
+          - name: stage
+            description: near_real_time (ods175) or historical (ods165).

@@ -1,0 +1,12 @@
+# Dagster instance settings, copied into .dagster/ by `make orchestrate`.
+
+run_coordinator:
+  module: dagster.core.run_coordinator
+  class: QueuedRunCoordinator
+  config:
+    # One run at a time: every asset writes to the lakehouse, and Silver's
+    # watermark assumes a single sequential writer (docs/decisions/003).
+    max_concurrent_runs: 1
+
+telemetry:
+  enabled: false

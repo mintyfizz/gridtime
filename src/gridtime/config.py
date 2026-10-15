@@ -1,9 +1,12 @@
 """All settings in one place, loaded from environment variables / .env."""
 
 from functools import lru_cache
+from pathlib import Path
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 class Settings(BaseSettings):
@@ -40,9 +43,26 @@ class Settings(BaseSettings):
                 overrides[key.strip()] = int(value)
         return overrides.get(dataset_id, self.elia_lookback_minutes)
 
+    # Local analytics files (Gold layer). Relative paths resolve against the repo root.
+    data_dir: str = "data"
+
     @property
     def warehouse(self) -> str:
         return f"s3://{self.s3_bucket}/warehouse"
+
+    @property
+    def data_path(self) -> Path:
+        path = Path(self.data_dir)
+        return path if path.is_absolute() else (REPO_ROOT / path)
+
+    @property
+    def silver_export_path(self) -> Path:
+        """Parquet snapshot of Silver that dbt reads to build Gold."""
+        return self.data_path / "silver" / "balancing_minute.parquet"
+
+    @property
+    def gold_db_path(self) -> Path:
+        return self.data_path / "warehouse.duckdb"
 
 
 @lru_cache
