@@ -43,6 +43,19 @@ class Settings(BaseSettings):
                 overrides[key.strip()] = int(value)
         return overrides.get(dataset_id, self.elia_lookback_minutes)
 
+    # Streaming (Redpanda, Kafka API)
+    kafka_bootstrap: str = "localhost:19092"
+    kafka_topic_prefix: str = "elia"
+    kafka_consumer_group: str = "bronze-sink"
+    kafka_retention_days: int = 7
+
+    def topic_for(self, dataset_id: str) -> str:
+        return f"{self.kafka_topic_prefix}.{dataset_id}"
+
+    @property
+    def dlq_topic(self) -> str:
+        return f"{self.kafka_topic_prefix}.dlq"
+
     # Local analytics files (Gold layer). Relative paths resolve against the repo root.
     data_dir: str = "data"
 

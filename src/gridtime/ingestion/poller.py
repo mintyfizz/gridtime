@@ -1,4 +1,7 @@
-"""Fetch → validate → deduplicate → append to Bronze.
+"""Fetch from Elia → validate → publish to Redpanda.
+
+Valid records go to elia.<dataset_id>; invalid ones to elia.dlq. Nothing is
+written to Bronze here: the Bronze sink (bronze_sink.py) consumes the topics.
 
 Run once:        python -m gridtime.ingestion.poller --once
 Run forever:     python -m gridtime.ingestion.poller
@@ -10,12 +13,18 @@ import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
+from confluent_kafka import Producer
 from pydantic import ValidationError
 
 from gridtime.config import get_settings
 from gridtime.ingestion.elia_client import EliaClient
-from gridtime.ingestion.schemas import BronzeRow, to_bronze_row
-from gridtime.storage.tables import append_bronze, existing_hashes
+from gridtime.ingestion.schemas import EliaRecord
+from gridtime.ingestion.stream import (
+    Observation,
+    dlq_message,
+    ensure_topics,
+    make_producer,
+)
 
 log = logging.getLogger("gridtime.poller")
 
@@ -24,13 +33,19 @@ log = logging.getLogger("gridtime.poller")
 class PollStats:
     dataset_id: str
     fetched: int
-    new: int
-    duplicate: int
+    published: int
     rejected: int
     received_at: datetime
 
 
-def poll_dataset(client: EliaClient, dataset_id: str, lookback: timedelta) -> PollStats:
+class DeliveryError(RuntimeError):
+    pass
+
+
+def poll_dataset(
+    client: EliaClient, producer: Producer, dataset_id: str, lookback: timedelta
+) -> PollStats:
+    settings = get_settings()
     received_at = datetime.now(UTC)
     since = received_at - lookback
     raw_records = client.fetch_since(dataset_id, since)
@@ -39,47 +54,61 @@ def poll_dataset(client: EliaClient, dataset_id: str, lookback: timedelta) -> Po
         # poll catches up. Logged so a real outage doesn't go unnoticed.
         log.warning("%s: no records since %s", dataset_id, since.isoformat())
 
-    rows: list[BronzeRow] = []
-    rejected = 0
+    failures: list[str] = []
+
+    def on_delivery(err, _msg):
+        if err is not None:
+            failures.append(str(err))
+
+    published = rejected = 0
+    url = client.records_url(dataset_id)
     for raw in raw_records:
         try:
-            rows.append(
-                to_bronze_row(dataset_id, raw, received_at, client.records_url(dataset_id))
-            )
+            EliaRecord.model_validate(raw)
         except ValidationError as exc:
             rejected += 1
-            log.warning("%s: rejected record (%s)", dataset_id, exc.errors()[0]["msg"])
+            error = exc.errors()[0]["msg"]
+            log.warning("%s: rejected record → DLQ (%s)", dataset_id, error)
+            producer.produce(
+                settings.dlq_topic,
+                value=dlq_message(dataset_id, received_at, raw, error),
+                on_delivery=on_delivery,
+            )
+            continue
+        obs = Observation(dataset_id, received_at, url, raw)
+        producer.produce(
+            settings.topic_for(dataset_id), key=obs.key(), value=obs.encode(),
+            on_delivery=on_delivery,
+        )
+        published += 1
+        producer.poll(0)
 
-    # Idempotency: skip payloads we've already stored. A *changed* value for the
-    # same quarter-hour has a new hash, so revisions are kept as new versions.
-    seen = existing_hashes(dataset_id, since=since - timedelta(days=1))
-    new_rows = [r for r in rows if r.payload_hash not in seen]
-    append_bronze(new_rows)
+    remaining = producer.flush(30)
+    if failures or remaining:
+        raise DeliveryError(
+            f"{dataset_id}: {len(failures)} failed deliveries, {remaining} undelivered "
+            f"(first error: {failures[0] if failures else 'timeout'})"
+        )
 
-    stats = PollStats(
-        dataset_id=dataset_id,
-        fetched=len(raw_records),
-        new=len(new_rows),
-        duplicate=len(rows) - len(new_rows),
-        rejected=rejected,
-        received_at=received_at,
-    )
+    stats = PollStats(dataset_id, len(raw_records), published, rejected, received_at)
     log.info(
-        "%s: fetched=%d new=%d duplicate=%d rejected=%d",
-        dataset_id, stats.fetched, stats.new, stats.duplicate, stats.rejected,
+        "%s: fetched=%d published=%d rejected=%d",
+        dataset_id, stats.fetched, stats.published, stats.rejected,
     )
     return stats
 
 
 def run(once: bool) -> None:
     settings = get_settings()
+    ensure_topics(settings)
     client = EliaClient(settings.elia_base_url, page_size=settings.elia_page_size)
+    producer = make_producer(settings)
     try:
         while True:
             for dataset_id in settings.dataset_ids:
                 lookback = timedelta(minutes=settings.lookback_minutes(dataset_id))
                 try:
-                    poll_dataset(client, dataset_id, lookback)
+                    poll_dataset(client, producer, dataset_id, lookback)
                 except Exception:  # one bad dataset must not stop the others
                     log.exception("%s: poll failed", dataset_id)
             if once:
@@ -87,6 +116,7 @@ def run(once: bool) -> None:
             time.sleep(settings.poll_interval_seconds)
     finally:
         client.close()
+        producer.flush(10)
 
 
 if __name__ == "__main__":

@@ -191,3 +191,30 @@ def test_run_is_incremental_and_idempotent(local_catalog):
     stored = tables.silver_table().scan().to_arrow()
     assert values(asof.current(stored), "system_imbalance") == [-310.0]
     assert silver.read_watermark(tables.silver_table()) == at(5)
+
+
+def test_late_arriving_observation_is_not_skipped(local_catalog):
+    """Milestone 4: a buffered observation can reach Bronze after newer ones."""
+    ingest_1 = at(10)
+    ingest_2 = at(20)
+
+    def ingested(table: pa.Table, when: datetime) -> pa.Table:
+        col = pa.array([when] * table.num_rows, pa.timestamp("us", tz="UTC"))
+        return table.set_column(table.schema.get_field_index("ingested_at"), "ingested_at", col)
+
+    newer = bronze((NRT, payload(systemimbalance=-310.0), at(5)))
+    tables.bronze_table().append(ingested(newer, ingest_1))
+    assert silver.run()["bronze_rows"] == 1
+    assert silver.read_watermark(tables.silver_table()) == ingest_1
+
+    # Observed earlier (transaction_time at(3) < watermark) but ingested later.
+    older = bronze((HISTORICAL, payload(systemimbalance=-300.0), at(3)))
+    tables.bronze_table().append(ingested(older, ingest_2))
+    stats = silver.run()
+    assert stats["bronze_rows"] == 1
+
+    hist = asof.history(tables.silver_table().scan().to_arrow(), MINUTE, "system_imbalance")
+    assert [(r["value"], r["transaction_time"]) for r in hist.to_pylist()] == [
+        (-300.0, at(3)),
+        (-310.0, at(5)),
+    ]

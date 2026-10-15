@@ -19,6 +19,7 @@ dependencies = [
     "dagster-dbt>=0.27",
     "dbt-core>=1.10",
     "dbt-duckdb>=1.9",
+    "confluent-kafka>=2.5",
 ]
 
 [dependency-groups]

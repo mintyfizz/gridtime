@@ -29,7 +29,16 @@ BRONZE_SCHEMA = Schema(
     NestedField(4, "payload", StringType(), required=True),
     NestedField(5, "payload_hash", StringType(), required=True),
     NestedField(6, "source_url", StringType(), required=True),
+    NestedField(7, "ingested_at", TimestamptzType(), required=False),
+    NestedField(8, "source_offset", StringType(), required=False),
 )
+
+# Columns added after the table first went live. Existing tables get them through
+# Iceberg schema evolution (metadata only, no data rewrite); old rows read as null.
+BRONZE_EVOLVED_COLUMNS = [
+    ("ingested_at", TimestamptzType(), "When the Bronze sink committed the row"),
+    ("source_offset", StringType(), "topic:partition:offset the row was consumed from"),
+]
 
 # Partition by dataset and by the day we *received* the data: appends stay cheap
 # and "what arrived since X" scans only recent files.
@@ -46,6 +55,8 @@ ARROW_SCHEMA = pa.schema(
         pa.field("payload", pa.string(), nullable=False),
         pa.field("payload_hash", pa.string(), nullable=False),
         pa.field("source_url", pa.string(), nullable=False),
+        pa.field("ingested_at", pa.timestamp("us", tz="UTC"), nullable=True),
+        pa.field("source_offset", pa.string(), nullable=True),
     ]
 )
 
@@ -77,10 +88,23 @@ def create_tables() -> None:
     catalog.create_table_if_not_exists(
         BRONZE_TABLE, schema=BRONZE_SCHEMA, partition_spec=BRONZE_PARTITIONING
     )
+    evolve_bronze_schema()
     catalog.create_namespace_if_not_exists(SILVER_NAMESPACE)
     catalog.create_table_if_not_exists(
         SILVER_TABLE, schema=SILVER_SCHEMA, partition_spec=SILVER_PARTITIONING
     )
+
+
+def evolve_bronze_schema() -> list[str]:
+    """Add any missing evolved columns to an existing Bronze table. Returns names added."""
+    table = bronze_table()
+    existing = {f.name for f in table.schema().fields}
+    missing = [c for c in BRONZE_EVOLVED_COLUMNS if c[0] not in existing]
+    if missing:
+        with table.update_schema() as update:
+            for name, field_type, doc in missing:
+                update.add_column(name, field_type, doc=doc)
+    return [c[0] for c in missing]
 
 
 def bronze_table() -> Table:

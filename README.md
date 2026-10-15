@@ -23,8 +23,8 @@ know it yet:
 ## Architecture
 
 ```
-Elia API → pollers → Bronze (raw, append-only) → Silver (bitemporal) → Gold (dbt) → analysis
-            storage: MinIO (S3) + Iceberg · Gold: dbt on DuckDB · orchestration: Dagster
+Elia API → pollers → Redpanda → Bronze sink → Bronze (raw) → Silver (bitemporal) → Gold (dbt)
+   storage: MinIO (S3) + Iceberg · streaming: Redpanda · Gold: dbt on DuckDB · orchestration: Dagster
 ```
 
 See [docs/architecture.md](docs/architecture.md).
@@ -36,7 +36,7 @@ See [docs/architecture.md](docs/architecture.md).
 | 1 | Ingest Elia data into Bronze | MinIO, Iceberg (PyIceberg) | Done |
 | 2 | Bitemporal Silver layer | – | Done |
 | 3 | Orchestration + Gold models | Dagster, dbt | Done |
-| 4 | Streaming buffer | Redpanda | Planned |
+| 4 | Streaming buffer | Redpanda | Done |
 | 5 | Forecasting + evaluation | statsforecast, mlforecast, MLflow | Planned |
 | 6 | Platform upgrade | Trino, Nessie, Soda | Planned |
 
@@ -49,7 +49,7 @@ cp .env.example .env
 make up        # start MinIO and create the lakehouse bucket
 make install   # install Python dependencies
 make init      # create the Iceberg tables
-make ingest    # poll Elia once and write to Bronze
+make ingest    # poll Elia once into Redpanda, then drain the topics into Bronze
 make silver    # turn new Bronze rows into bitemporal Silver versions
 make peek      # query Bronze with DuckDB
 make dashboard # open the dashboard at http://localhost:8501
@@ -64,6 +64,15 @@ make orchestrate   # Dagster UI at http://localhost:3000
 
 ![Dagster asset lineage: Bronze → Silver → Gold, with checks](docs/img/dagster_lineage.png)
 
+## Streaming
+
+Pollers publish every observation to Redpanda (`elia.ods175`, `elia.ods165`); invalid
+records go to `elia.dlq`. The Bronze sink drains the topics, drops payloads Bronze already
+has, appends the rest and only then commits offsets: at-least-once delivery, exactly-once
+storage. See [decisions/004](docs/decisions/004-streaming-buffer.md).
+
+![Observations in the elia.ods175 topic](docs/img/redpanda_messages.png)
+
 ## Gold models (dbt)
 
 | Model | Grain | What it answers |
@@ -75,7 +84,8 @@ make orchestrate   # Dagster UI at http://localhost:3000
 
 Every model is tested (`make gold`); in Dagster the dbt tests appear as asset checks.
 
-MinIO console: http://localhost:9001 (credentials in `.env`).
+MinIO console: http://localhost:9001 (credentials in `.env`) · Redpanda Console:
+http://localhost:8080 (topics, messages, consumer lag).
 
 ## Querying the past
 
@@ -101,7 +111,7 @@ asof.revisions(silver, "system_imbalance")                       # first publish
 ```
 src/gridtime/
   config.py            settings loaded from .env
-  ingestion/           Elia client, payload schemas, poller
+  ingestion/           Elia client, schemas, poller (producer), Redpanda plumbing, Bronze sink
   storage/             Iceberg catalog connection and table definitions
   transform/           Bronze → Silver: canonical measures, versioning, as-of reads
   orchestration/       Dagster assets, schedules, checks

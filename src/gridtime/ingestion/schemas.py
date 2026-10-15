@@ -34,6 +34,8 @@ class BronzeRow(BaseModel):
     payload: str                  # raw JSON, exactly as received
     payload_hash: str             # sha256 of dataset_id + canonical payload
     source_url: str
+    ingested_at: datetime | None = None   # when the Bronze sink committed it (milestone 4)
+    source_offset: str | None = None      # topic:partition:offset it was consumed from
 
 
 def canonical_json(record: dict) -> str:

@@ -23,7 +23,14 @@ from pathlib import Path
 import duckdb
 import pyarrow as pa
 import pyarrow.parquet as pq
-from pyiceberg.expressions import And, GreaterThan, GreaterThanOrEqual, LessThanOrEqual
+from pyiceberg.expressions import (
+    And,
+    GreaterThan,
+    GreaterThanOrEqual,
+    IsNull,
+    LessThanOrEqual,
+    Or,
+)
 
 from gridtime.transform.measures import STAGES, mapping_rows
 
@@ -170,6 +177,29 @@ def latest_versions(silver: pa.Table) -> pa.Table:
 # ---------------------------------------------------------------- Iceberg I/O
 
 
+def new_bronze_filter(watermark: datetime, has_ingested_at: bool = True):
+    """Bronze rows that reached Bronze after the watermark.
+
+    Since milestone 4 rows carry `ingested_at` (set by the Bronze sink), and the
+    watermark tracks it: a buffered observation can reach Bronze after newer ones,
+    so its transaction_time may be older than the watermark, but its ingested_at
+    never is. Rows written before the column existed fall back to transaction_time.
+    """
+    w = watermark.isoformat()
+    if not has_ingested_at:  # Bronze not yet evolved (schema migration pending)
+        return GreaterThan("transaction_time", w)
+    return Or(
+        GreaterThan("ingested_at", w),
+        And(IsNull("ingested_at"), GreaterThan("transaction_time", w)),
+    )
+
+
+def _ingestion_time(bronze: pa.Table) -> pa.Array:
+    if "ingested_at" not in bronze.column_names:
+        return bronze["transaction_time"]
+    return pa.compute.coalesce(bronze["ingested_at"], bronze["transaction_time"])
+
+
 def read_watermark(silver_table) -> datetime:
     snapshot = silver_table.current_snapshot()
     if snapshot is None:
@@ -186,7 +216,9 @@ def run() -> dict:
     watermark = read_watermark(silver_t)
 
     new_bronze = bronze_t.scan(
-        row_filter=GreaterThan("transaction_time", watermark.isoformat())
+        row_filter=new_bronze_filter(
+            watermark, "ingested_at" in {f.name for f in bronze_t.schema().fields}
+        )
     ).to_arrow()
     if new_bronze.num_rows == 0:
         log.info("No new Bronze rows since %s", watermark.isoformat())
@@ -204,7 +236,7 @@ def run() -> dict:
         ).to_arrow()
     )
     versions = new_versions(candidates, prior)
-    new_watermark = pa.compute.max(new_bronze["transaction_time"]).as_py()
+    new_watermark = pa.compute.max(_ingestion_time(new_bronze)).as_py()
 
     # Always commit (even zero rows) so the watermark advances with the snapshot.
     silver_t.append(versions, snapshot_properties={WATERMARK_KEY: new_watermark.isoformat()})

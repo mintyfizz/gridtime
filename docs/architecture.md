@@ -1,6 +1,6 @@
 # Architecture
 
-## Data flow (milestone 1)
+## Data flow (milestone 1, superseded by the streaming flow below)
 
 1. `make up` starts MinIO (local S3) and creates the `lakehouse` bucket.
 2. The poller, for each configured Elia dataset:
@@ -41,6 +41,18 @@ bronze/elia_historical ──┘     (eager)                       (dbt)        
 Runs are serialised (`dagster.yaml`, one concurrent run). Checks: near-real-time freshness
 (< 30 min), no duplicate Silver versions, and every dbt test. See
 [decisions/003](decisions/003-orchestration-and-gold.md).
+
+## Streaming (milestone 4)
+
+```
+Elia API ─► poller ─► elia.ods175 / elia.ods165 ─► Bronze sink ─► bronze.elia_raw
+               └────► elia.dlq (invalid records)      (dedup by hash, commit offsets after append)
+```
+
+Bronze gained `ingested_at` and `source_offset` through Iceberg schema evolution; Silver's
+watermark follows `ingested_at`. Dagster graph: `stream/elia_ods175`, `stream/elia_ods165`
+(scheduled) → `bronze/elia_raw` (eager, checks: consumer lag = 0, freshness) → Silver → Gold.
+See [decisions/004](decisions/004-streaming-buffer.md).
 
 ## Layers
 

@@ -1,6 +1,6 @@
-.PHONY: up down install init ingest poll peek silver gold orchestrate dashboard test lint
+.PHONY: up down install init ingest poll sink peek silver gold orchestrate dashboard test lint
 
-up:            ## Start MinIO and create the bucket
+up:            ## Start MinIO, Redpanda and Redpanda Console
 	docker compose up -d
 
 down:          ## Stop containers (data is kept in the volume)
@@ -9,14 +9,19 @@ down:          ## Stop containers (data is kept in the volume)
 install:       ## Install dependencies into .venv
 	uv sync
 
-init:          ## Create Iceberg namespace and tables
+init:          ## Create/evolve Iceberg tables and the Redpanda topics
 	uv run python -m gridtime.storage.tables
+	uv run python -c "from gridtime.ingestion.stream import ensure_topics; print('topics created:', ensure_topics() or 'none (already exist)')"
 
-ingest:        ## Poll Elia once
+ingest:        ## Poll Elia once into Redpanda, then drain the topics into Bronze
 	uv run python -m gridtime.ingestion.poller --once
+	uv run python -m gridtime.ingestion.bronze_sink --once
 
-poll:          ## Poll Elia continuously
+poll:          ## Publish Elia observations to Redpanda continuously
 	uv run python -m gridtime.ingestion.poller
+
+sink:          ## Consume Redpanda into Bronze continuously (don't run alongside Dagster)
+	uv run python -m gridtime.ingestion.bronze_sink
 
 silver:        ## Process new Bronze rows into the bitemporal Silver table
 	uv run python -m gridtime.transform.silver

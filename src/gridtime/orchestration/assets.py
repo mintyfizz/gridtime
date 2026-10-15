@@ -1,9 +1,9 @@
-"""Dagster assets: Bronze polls → Silver → dbt Gold.
+"""Dagster assets: Elia → Redpanda topics → Bronze sink → Silver → dbt Gold.
 
-Every asset that writes to the lakehouse runs one at a time (the instance allows a
-single concurrent run, see dagster.yaml). Silver's watermark assumes Bronze rows
-never arrive with a transaction_time older than the last processed one, which
-only holds with a single writer (docs/decisions/002 and 003).
+Every run is serialised (one concurrent run, see dagster.yaml) because each step
+commits to Iceberg through the same SQL catalog. Silver reads Bronze by
+`ingested_at`, so buffered observations that reach Bronze late are still picked
+up (docs/decisions/002–004).
 """
 
 from datetime import UTC, datetime, timedelta
@@ -24,62 +24,93 @@ from dagster_dbt import DagsterDbtTranslator, DbtCliResource, DbtProject, dbt_as
 from pyiceberg.expressions import And, EqualTo, GreaterThanOrEqual
 
 from gridtime.config import REPO_ROOT, get_settings
+from gridtime.ingestion import bronze_sink
 from gridtime.ingestion.elia_client import EliaClient
 from gridtime.ingestion.poller import poll_dataset
+from gridtime.ingestion.stream import ensure_topics, make_producer
 from gridtime.storage.tables import bronze_table, silver_table
 from gridtime.transform import silver
 from gridtime.transform.measures import HISTORICAL, NRT
 
-BRONZE_NRT = AssetKey(["bronze", "elia_nrt"])
-BRONZE_HISTORICAL = AssetKey(["bronze", "elia_historical"])
+STREAM_NRT = AssetKey(["stream", "elia_ods175"])
+STREAM_HISTORICAL = AssetKey(["stream", "elia_ods165"])
+BRONZE = AssetKey(["bronze", "elia_raw"])
 SILVER = AssetKey(["silver", "balancing_minute"])  # same key dbt uses for its source
 
 NRT_MAX_AGE = timedelta(minutes=30)
 
 
-def _poll(dataset_id: str) -> MaterializeResult:
+def _publish(dataset_id: str) -> MaterializeResult:
     settings = get_settings()
+    ensure_topics(settings)
     client = EliaClient(settings.elia_base_url, page_size=settings.elia_page_size)
+    producer = make_producer(settings)
     try:
         stats = poll_dataset(
-            client, dataset_id, timedelta(minutes=settings.lookback_minutes(dataset_id))
+            client, producer, dataset_id,
+            timedelta(minutes=settings.lookback_minutes(dataset_id)),
         )
     finally:
         client.close()
     return MaterializeResult(
         metadata={
+            "topic": settings.topic_for(dataset_id),
             "fetched": stats.fetched,
-            "new_rows": stats.new,
-            "duplicates": stats.duplicate,
-            "rejected": stats.rejected,
+            "published": stats.published,
+            "rejected_to_dlq": stats.rejected,
             "received_at": MetadataValue.timestamp(stats.received_at),
         }
     )
 
 
 @asset(
-    key=BRONZE_NRT,
-    group_name="bronze",
-    kinds={"python", "iceberg"},
-    description="Poll Elia ods175 (near real-time, current hours) into Bronze.",
+    key=STREAM_NRT,
+    group_name="stream",
+    kinds={"python", "kafka"},
+    description="Poll Elia ods175 (near real-time) and publish each observation to Redpanda.",
 )
-def elia_nrt() -> MaterializeResult:
-    return _poll(NRT)
+def elia_ods175() -> MaterializeResult:
+    return _publish(NRT)
 
 
 @asset(
-    key=BRONZE_HISTORICAL,
-    group_name="bronze",
-    kinds={"python", "iceberg"},
-    description="Poll Elia ods165 (historical, refreshed daily) into Bronze.",
+    key=STREAM_HISTORICAL,
+    group_name="stream",
+    kinds={"python", "kafka"},
+    description="Poll Elia ods165 (historical, daily) and publish each observation to Redpanda.",
 )
-def elia_historical() -> MaterializeResult:
-    return _poll(HISTORICAL)
+def elia_ods165() -> MaterializeResult:
+    return _publish(HISTORICAL)
+
+
+@asset(
+    key=BRONZE,
+    deps=[STREAM_NRT, STREAM_HISTORICAL],
+    group_name="bronze",
+    kinds={"python", "kafka", "iceberg"},
+    automation_condition=AutomationCondition.eager(),
+    description=(
+        "Drain the Elia topics into Bronze: deduplicate by payload hash, append to "
+        "Iceberg, then commit consumer offsets."
+    ),
+)
+def elia_raw() -> MaterializeResult:
+    stats = bronze_sink.run_once()
+    return MaterializeResult(
+        metadata={
+            "consumed": stats.consumed,
+            "new_rows": stats.new_rows,
+            "duplicates": stats.duplicates,
+            "rejected": stats.rejected,
+            "undecodable": stats.undecodable,
+            "consumer_lag_after": stats.total_lag,
+        }
+    )
 
 
 @asset(
     key=SILVER,
-    deps=[BRONZE_NRT, BRONZE_HISTORICAL],
+    deps=[BRONZE],
     group_name="silver",
     kinds={"python", "iceberg", "parquet"},
     automation_condition=AutomationCondition.eager(),
@@ -106,7 +137,23 @@ def balancing_minute(context: AssetExecutionContext) -> MaterializeResult:
 # ---------------------------------------------------------------- checks
 
 
-@asset_check(asset=BRONZE_NRT, description="Near real-time data is no older than 30 minutes.")
+@asset_check(asset=BRONZE, description="The sink has consumed everything in the Elia topics.")
+def stream_fully_consumed() -> AssetCheckResult:
+    settings = get_settings()
+    topics = [settings.topic_for(d) for d in settings.dataset_ids]
+    consumer = bronze_sink.make_consumer(settings)
+    try:
+        lag = bronze_sink.lag(consumer, topics)
+    finally:
+        consumer.close()
+    return AssetCheckResult(
+        passed=sum(lag.values()) == 0,
+        severity=AssetCheckSeverity.WARN,
+        metadata={"lag_by_partition": MetadataValue.json(lag)},
+    )
+
+
+@asset_check(asset=BRONZE, description="Near real-time data in Bronze is no older than 30 minutes.")
 def nrt_is_fresh() -> AssetCheckResult:
     now = datetime.now(UTC)
     recent = bronze_table().scan(

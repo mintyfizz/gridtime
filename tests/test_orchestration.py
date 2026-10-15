@@ -33,7 +33,8 @@ def test_gold_depends_on_silver():
     stg = AssetKey(["staging", "stg_silver__versions"])
     assert assets.SILVER in graph.get(stg).parent_keys
     assert stg in graph.get(AssetKey(["gold", "fct_revisions"])).parent_keys
-    assert {assets.BRONZE_NRT, assets.BRONZE_HISTORICAL} <= graph.get(assets.SILVER).parent_keys
+    assert graph.get(assets.SILVER).parent_keys == {assets.BRONZE}
+    assert graph.get(assets.BRONZE).parent_keys == {assets.STREAM_NRT, assets.STREAM_HISTORICAL}
 
 
 @pytest.fixture
