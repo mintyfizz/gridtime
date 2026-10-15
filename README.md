@@ -12,6 +12,8 @@ version** of every value, stamped with two times:
 That makes "as-of" questions answerable: *what did we know about 14:00–14:15 at 14:07?* This is the
 foundation for honest forecast evaluation without data leakage.
 
+![GridTime dashboard](docs/img/dashboard.png)
+
 ## Architecture
 
 ```
@@ -43,6 +45,7 @@ make install   # install Python dependencies
 make init      # create the Iceberg tables
 make ingest    # poll Elia once and write to Bronze
 make peek      # query Bronze with DuckDB
+make dashboard # open the dashboard at http://localhost:8501
 ```
 
 MinIO console: http://localhost:9001 (credentials in `.env`).
@@ -55,6 +58,7 @@ src/gridtime/
   ingestion/           Elia client, payload schemas, poller
   storage/             Iceberg catalog connection and table definitions
   transform/           Bronze → Silver (milestone 2)
+  dashboard/           Streamlit app and the queries behind it
 tests/                 unit tests
 docs/                  architecture and decision records
 ```

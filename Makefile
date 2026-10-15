@@ -1,4 +1,4 @@
-.PHONY: up down install init ingest poll peek test lint
+.PHONY: up down install init ingest poll peek dashboard test lint
 
 up:            ## Start MinIO and create the bucket
 	docker compose up -d
@@ -20,6 +20,9 @@ poll:          ## Poll Elia continuously
 
 peek:          ## Show what's in Bronze
 	uv run python -m gridtime.storage.peek
+
+dashboard:     ## Open the dashboard at http://localhost:8501
+	uv run streamlit run src/gridtime/dashboard/app.py
 
 test:
 	uv run pytest -q

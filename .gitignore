@@ -7,3 +7,4 @@ __pycache__/
 catalog/
 data/
 .DS_Store
+.shots/

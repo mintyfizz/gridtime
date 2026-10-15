@@ -11,6 +11,9 @@ dependencies = [
     "pyiceberg[s3fs,sql-sqlite,pyarrow,pyiceberg-core]>=0.9",
     "duckdb>=1.0",
     "polars>=1.0",
+    "streamlit>=1.40",
+    "altair>=5.4",
+    "pandas>=2.2",
 ]
 
 [dependency-groups]
